@@ -413,6 +413,394 @@ test('gamepad mode: open button hits an open note only with no frets held', () =
     assert.equal(e.noteState(0), 'hit');
 });
 
+// ── Sustains, whammy, star power, solos, stars (Task 5) ─────────────────────
+
+// chart.beats at a steady tempo: one entry per beat, `measure` >= 0 on each downbeat (-1 otherwise).
+function steadyBeats(secondsPerBeat, beatsPerMeasure, count) {
+    const beats = [];
+    for (let i = 0; i < count; i++) {
+        beats.push({ time: i * secondsPerBeat, measure: i % beatsPerMeasure === 0 ? i / beatsPerMeasure : -1 });
+    }
+    return beats;
+}
+const BEATS_120 = steadyBeats(0.5, 4, 200); // 120 BPM 4/4: a beat is 0.5 s, a measure 2 s
+
+function chart5(notes, extra) {
+    return Object.assign({ notes, starPower: [], solos: [], beats: BEATS_120 }, extra || {});
+}
+function engine5(notes, extra, opts) {
+    return E.create(chart5(notes, extra), opts || { instrument: 'guitar' });
+}
+const near = (a, b, eps, msg) => assert.ok(Math.abs(a - b) <= (eps || 1e-6), (msg || '') + ` ${a} != ${b}`);
+
+test('sustain scores per beat while held', () => {
+    // 2 s at 120 BPM = 4 beats = 100 sustain points (25 per beat).
+    const e = engine5([{ t: 1, f: G, l: 2 }]);
+    const log = collect(e, ['sustain-start', 'sustain-end']);
+    press(e, 0.9, 'green');
+    strum(e, 1);
+    assert.equal(e.getState().score, 50);
+    assert.deepEqual(log.map(x => x[0]), ['sustain-start']);
+    e.update(2); // 2 beats held: 50 points pending, shown in the score
+    assert.equal(e.getState().score, 100);
+    e.update(3.5);
+    assert.equal(e.getState().score, 150);
+    assert.deepEqual(log.map(x => x[0]), ['sustain-start', 'sustain-end']);
+    assert.equal(log[1][1].finished, true);
+    assert.equal(log[1][1].index, 0);
+
+    // A sustain is scored in full once it reaches the burst point, a quarter beat before its end.
+    const e2 = engine5([{ t: 1, f: G, l: 2 }]);
+    press(e2, 0.9, 'green');
+    strum(e2, 1);
+    release(e2, 2.9, 'green'); // burst at 2.875
+    e2.update(3.5);
+    assert.equal(e2.getState().score, 150);
+});
+
+test('sustain drop ends sustain early', () => {
+    const e = engine5([{ t: 1, f: G, l: 2 }]);
+    const log = collect(e, ['sustain-end']);
+    press(e, 0.9, 'green');
+    strum(e, 1);
+    release(e, 2, 'green');
+    e.update(2.02);
+    assert.equal(log.length, 0, 'still held by the 25 ms drop leniency');
+    e.update(2.1);
+    assert.equal(log.length, 1);
+    assert.equal(log[0][1].finished, false);
+    near(log[0][1].time, 2.025, 1e-9);
+    // Scored up to the drop: 2.05 beats -> ceil(51.25) = 52.
+    assert.equal(e.getState().score, 50 + 52);
+    e.update(3.5);
+    assert.equal(e.getState().score, 50 + 52);
+
+    // Pressing the fret again inside the leniency keeps the sustain.
+    const e2 = engine5([{ t: 1, f: G, l: 2 }]);
+    press(e2, 0.9, 'green');
+    strum(e2, 1);
+    release(e2, 2, 'green');
+    press(e2, 2.01, 'green');
+    e2.update(3.5);
+    assert.equal(e2.getState().score, 150);
+});
+
+test('extended sustain: its fret is masked out for the next note and keeps scoring', () => {
+    // Yellow sustains from 1 to 3 over a green note at 2: holding yellow above green would block a
+    // single green note, but the extended sustain's fret is ignored when matching.
+    const e = engine5([{ t: 1, f: Y, l: 2 }, { t: 2, f: G }]);
+    const log = collect(e, ['sustain-end']);
+    press(e, 0.9, 'yellow');
+    strum(e, 1);
+    press(e, 1.9, 'green');
+    strum(e, 2);
+    assert.equal(e.noteState(1), 'hit');
+    e.update(3.5);
+    assert.equal(log.length, 1);
+    assert.equal(log[0][1].finished, true);
+    assert.equal(e.getState().score, 50 + 50 + 100);
+});
+
+test('hitting a note on a sustain\'s fret ends that sustain unscored', () => {
+    const e = engine5([{ t: 1, f: G, l: 2 }, { t: 2, f: G }]);
+    const log = collect(e, ['sustain-end']);
+    press(e, 0.9, 'green');
+    strum(e, 1);
+    strum(e, 2);
+    assert.equal(log.length, 1);
+    assert.equal(log[0][1].finished, false);
+    e.update(3.5);
+    assert.equal(e.getState().score, 100, 'the held part is not scored');
+});
+
+test('extended sustain only needs its own frets (backwards overlap)', () => {
+    // Red starts while green still sustains, so red's own sustain is extended: a fret held above it
+    // does not drop it. A plain sustain is dropped by the same fret.
+    const e = engine5([{ t: 1, f: G, l: 0.5 }, { t: 1.2, f: R, l: 1 }]);
+    const log = collect(e, ['sustain-end']);
+    press(e, 0.9, 'green');
+    strum(e, 1);
+    press(e, 1.2, 'red');
+    strum(e, 1.2);
+    press(e, 1.4, 'yellow');
+    e.update(3);
+    assert.deepEqual(log.map(x => x[1].finished), [true, true]);
+
+    const e2 = engine5([{ t: 1.2, f: R, l: 1 }]);
+    const log2 = collect(e2, ['sustain-end']);
+    press(e2, 0.9, 'red');
+    strum(e2, 1.2);
+    press(e2, 1.4, 'yellow');
+    e2.update(3);
+    assert.deepEqual(log2.map(x => x[1].finished), [false]);
+});
+
+test('overstrum breaks an active sustain', () => {
+    const e = engine5([{ t: 1, f: G, l: 2 }, { t: 5, f: G }]);
+    const log = collect(e, ['sustain-end']);
+    press(e, 0.9, 'green');
+    strum(e, 1);
+    strum(e, 2); // nothing in the window: small leniency, then an overstrum at 2.025
+    e.update(2.1);
+    assert.equal(e.getState().overstrums, 1);
+    assert.equal(log.length, 1);
+    assert.equal(log[0][1].finished, false);
+    // YARG adds the points held so far (2.05 beats -> 52) without the multiplier.
+    assert.equal(e.getState().score, 50 + 52);
+});
+
+test('SP phrase completed adds a quarter', () => {
+    const e = engine5([{ t: 1, f: G }, { t: 1.5, f: G }, { t: 3, f: G }],
+        { starPower: [{ start_time: 0.9, end_time: 2 }] });
+    const log = collect(e, ['sp-phrase', 'sp-phrase-miss']);
+    press(e, 0.5, 'green');
+    strum(e, 1);
+    assert.equal(e.getState().starPower.amount, 0);
+    strum(e, 1.5);
+    assert.deepEqual(log.map(x => x[0]), ['sp-phrase']);
+    assert.equal(e.getState().starPower.amount, 0.25);
+    assert.equal(e.getState().starPower.active, false);
+});
+
+test('SP phrase broken by a miss gives nothing', () => {
+    const e = engine5([{ t: 1, f: G }, { t: 1.5, f: G }, { t: 3, f: G }],
+        { starPower: [{ start_time: 0.9, end_time: 2 }] });
+    const log = collect(e, ['sp-phrase', 'sp-phrase-miss']);
+    press(e, 0.5, 'green');
+    e.update(1.2); // first note of the phrase missed
+    assert.deepEqual(log.map(x => x[0]), ['sp-phrase-miss']);
+    strum(e, 1.5);
+    assert.equal(e.noteState(1), 'hit');
+    assert.deepEqual(log.map(x => x[0]), ['sp-phrase-miss']);
+    assert.equal(e.getState().starPower.amount, 0);
+});
+
+test('overstrum fails the phrase unless on its first note', () => {
+    const e = engine5([{ t: 1, f: G }, { t: 2, f: G }, { t: 2.5, f: G }, { t: 4, f: G }],
+        { starPower: [{ start_time: 1.9, end_time: 2.6 }] });
+    const log = collect(e, ['sp-phrase', 'sp-phrase-miss', 'overstrum']);
+    press(e, 0.5, 'green');
+    strum(e, 1);
+    strum(e, 1.5); // overstrum while the phrase's first note is next: the phrase survives
+    e.update(1.6);
+    assert.deepEqual(log.map(x => x[0]), ['overstrum']);
+    strum(e, 2);
+    strum(e, 2.2); // overstrum inside the phrase: it fails
+    e.update(2.3);
+    assert.deepEqual(log.map(x => x[0]), ['overstrum', 'sp-phrase-miss', 'overstrum']);
+    strum(e, 2.5);
+    assert.equal(e.noteState(2), 'hit');
+    assert.equal(e.getState().starPower.amount, 0);
+});
+
+// One single-note phrase per note, so each hit fills a quarter of the bar.
+function spChart(phraseNotes, laterNotes) {
+    const notes = phraseNotes.map(t => ({ t, f: G })).concat((laterNotes || []).map(t => ({ t, f: G })));
+    const starPower = phraseNotes.map(t => ({ start_time: t - 0.1, end_time: t + 0.1 }));
+    return { notes, starPower };
+}
+
+test('activate at half, refused below half', () => {
+    const c = spChart([1, 2], [6]);
+    const e = engine5(c.notes, { starPower: c.starPower });
+    const log = collect(e, ['sp-ready', 'sp-activate']);
+    press(e, 0.5, 'green');
+    strum(e, 1);
+    e.input(1.2, 'star_power', true);
+    e.input(1.3, 'star_power', false);
+    assert.equal(e.getState().starPower.active, false, 'a quarter bar is not enough');
+    assert.equal(e.getState().starPower.amount, 0.25);
+    strum(e, 2);
+    assert.deepEqual(log.map(x => x[0]), ['sp-ready']);
+    e.input(2.5, 'star_power', true);
+    e.input(2.6, 'star_power', false);
+    assert.equal(e.getState().starPower.active, true);
+    assert.deepEqual(log.map(x => x[0]), ['sp-ready', 'sp-activate']);
+});
+
+test('SP drains over 8 measures and doubles multiplier', () => {
+    const c = spChart([1, 2, 3, 4], [6, 30]);
+    const e = engine5(c.notes, { starPower: c.starPower });
+    const log = collect(e, ['sp-end']);
+    press(e, 0.5, 'green');
+    for (const t of [1, 2, 3, 4]) strum(e, t);
+    assert.equal(e.getState().starPower.amount, 1);
+    e.input(5, 'star_power', true);
+    e.input(5, 'star_power', false);
+    let s = e.getState();
+    assert.equal(s.starPower.active, true);
+    assert.equal(s.multiplier, 2, 'combo 4 = 1x, doubled');
+    const before = s.score;
+    strum(e, 6);
+    assert.equal(e.getState().score - before, 100, 'a note scores 50 x 2');
+    e.update(13); // 4 measures (8 s) in: half the bar left
+    near(e.getState().starPower.amount, 0.5, 1e-9);
+    e.update(20.9);
+    assert.equal(e.getState().starPower.active, true);
+    e.update(21.1); // 8 measures = 16 s after 5
+    s = e.getState();
+    assert.equal(s.starPower.active, false);
+    assert.equal(s.starPower.amount, 0);
+    assert.equal(s.multiplier, 1);
+    assert.equal(log.length, 1);
+    near(log[0][1].time, 21, 1e-6);
+});
+
+test('SP drain follows the measures of chart.beats (3/4 at 60 BPM)', () => {
+    // A measure is 3 s, so half a bar (4 measures) lasts 12 s.
+    const c = spChart([1, 2], [30]);
+    const e = E.create({ notes: c.notes, starPower: c.starPower, solos: [], beats: steadyBeats(1, 3, 60) },
+        { instrument: 'guitar' });
+    const log = collect(e, ['sp-end']);
+    press(e, 0.5, 'green');
+    strum(e, 1);
+    strum(e, 2);
+    e.input(3, 'star_power', true);
+    e.update(14.9);
+    assert.equal(e.getState().starPower.active, true);
+    e.update(15.1);
+    assert.equal(log.length, 1);
+    near(log[0][1].time, 15, 1e-6);
+});
+
+test('whammy refills during SP sustain', () => {
+    // The phrase's last note has a 4-beat sustain: whammying through it adds 4/30 of a bar
+    // (YARG: a full bar per 30 beats of whammy).
+    const notes = [{ t: 1, f: G, l: 2 }, { t: 6, f: G, l: 2 }];
+    const sp = [{ start_time: 0.9, end_time: 1.1 }];
+    const e = engine5(notes, { starPower: sp });
+    press(e, 0.5, 'green');
+    strum(e, 1);
+    assert.equal(e.getState().starPower.amount, 0.25);
+    for (let t = 1; t <= 3.0001; t += 0.1) e.input(t, 'whammy', (Math.round(t * 10) % 2) ? 1 : 0.5);
+    e.update(4);
+    near(e.getState().starPower.amount, 0.25 + 4 / 30, 1e-6);
+
+    // Whammy that stops keeps counting for 0.25 s after its last move (StarPowerWhammyBuffer):
+    // moves at 1.0 and 1.1 count until 1.35, 0.7 beats.
+    const e4 = engine5(notes, { starPower: sp });
+    press(e4, 0.5, 'green');
+    strum(e4, 1);
+    e4.input(1, 'whammy', 1);
+    e4.input(1.1, 'whammy', 0.5);
+    e4.update(4);
+    near(e4.getState().starPower.amount, 0.25 + 0.7 / 30, 1e-6);
+
+    // No whammy: nothing added. Whammy on a sustain outside a phrase: nothing either.
+    const e2 = engine5(notes, { starPower: sp });
+    press(e2, 0.5, 'green');
+    strum(e2, 1);
+    e2.update(4);
+    assert.equal(e2.getState().starPower.amount, 0.25);
+    strum(e2, 6);
+    for (let t = 6; t <= 8.0001; t += 0.1) e2.input(t, 'whammy', (Math.round(t * 10) % 2) ? 1 : 0.5);
+    e2.update(9);
+    assert.equal(e2.getState().starPower.amount, 0.25);
+
+    // While star power is active, whammy gain pushes its end back. Half a bar (4 measures) activated
+    // at 2 s would end at 10 s; whammying the 8-beat sustain (2 s to 6 s) adds 8 x 32 / 30 / 4 measures.
+    const e3 = engine5([{ t: 1, f: G }, { t: 2, f: G, l: 4 }],
+        { starPower: [{ start_time: 0.9, end_time: 1.1 }, { start_time: 1.9, end_time: 2.1 }] });
+    const log3 = collect(e3, ['sp-end']);
+    press(e3, 0.5, 'green');
+    strum(e3, 1);
+    strum(e3, 2);
+    e3.input(2, 'star_power', true);
+    assert.equal(e3.getState().starPower.active, true);
+    for (let t = 2; t <= 6.0001; t += 0.1) e3.input(t, 'whammy', (Math.round(t * 10) % 2) ? 1 : 0.5);
+    e3.update(20);
+    assert.equal(log3.length, 1);
+    near(log3[0][1].time, 2 * (3 + 4 + 8 * 32 / 30 / 4 - 2), 1e-6); // measure 7.133.. at 2 s per measure
+});
+
+test('solo percent', () => {
+    const notes = [{ t: 1, f: G }, { t: 1.5, f: G }, { t: 2, f: G }, { t: 2.5, f: G }, { t: 5, f: G }];
+    const e = engine5(notes, { solos: [{ start_time: 0.9, end_time: 3 }] });
+    const log = collect(e, ['solo-start', 'solo-end']);
+    press(e, 0.5, 'green');
+    assert.deepEqual(e.getState().solo, { active: false, hit: 0, total: 0 });
+    strum(e, 1);
+    assert.deepEqual(log.map(x => x[0]), ['solo-start']);
+    assert.deepEqual(e.getState().solo, { active: true, hit: 1, total: 4 });
+    strum(e, 1.5);
+    strum(e, 2);
+    const before = e.getState().score;
+    e.update(2.7); // the last solo note is missed
+    assert.deepEqual(log.map(x => x[0]), ['solo-start', 'solo-end']);
+    assert.equal(log[1][1].percent, 75);
+    // YARG EndSolo: 100 x hit x (75% - 60%) / 40% = 112.5, rounded down to a multiple of 50.
+    assert.equal(log[1][1].bonus, 100);
+    assert.equal(e.getState().score - before, 100);
+    assert.equal(e.getState().solo.active, false);
+
+    // Under 60%: no bonus.
+    const e2 = engine5(notes, { solos: [{ start_time: 0.9, end_time: 3 }] });
+    const log2 = collect(e2, ['solo-end']);
+    press(e2, 0.5, 'green');
+    strum(e2, 1);
+    strum(e2, 1.5);
+    e2.update(2.7);
+    assert.equal(log2[0][1].percent, 50);
+    assert.equal(log2[0][1].bonus, 0);
+});
+
+test('stars from thresholds for guitar and bass', () => {
+    // 20 notes, no sustains: the full-combo no-SP score YARG rates against is
+    // 10 x 50 + 10 x 100 = 1500 (multiplier from the combo before each note).
+    const notes = openRun(20);
+    const g = engine(notes, { instrument: 'guitar' });
+    const b = engine(notes, { instrument: 'bass' });
+    assert.equal(g.getState().stars, 0);
+    strumAll(g, notes, 2);
+    strumAll(b, notes, 2);
+    // Score 100. Guitar thresholds 90/180/...: 1 + (100 - 90) / 90. Bass 75/150/...: 1 + 25 / 75.
+    near(g.getState().stars, 1 + 10 / 90, 1e-6);
+    near(b.getState().stars, 1 + 25 / 75, 1e-6);
+    strumAll(g, notes.slice(2), 2);
+    strumAll(b, notes.slice(2), 2);
+    // Score 200. Guitar: 2 + (200 - 180) / (300 - 180). Bass: 2 + (200 - 150) / (285 - 150).
+    near(g.getState().stars, 2 + 20 / 120, 1e-6);
+    near(b.getState().stars, 2 + 50 / 135, 1e-6);
+
+    // A solo over the whole chart adds 100 points per note x [0.05, 0.1, ...] to the thresholds:
+    // the first guitar threshold is 1500 x 0.06 + 2000 x 0.05 = 190.
+    const gs = E.create({ notes, starPower: [], solos: [{ start_time: 0, end_time: 100 }], beats: [] },
+        { instrument: 'guitar' });
+    strumAll(gs, notes, 2);
+    near(gs.getState().stars, 100 / 190, 1e-6);
+});
+
+test('reset(t) clears state ahead of t without misses', () => {
+    const notes = [{ t: 1, f: G, l: 2 }, { t: 2, f: R }, { t: 4, f: G }, { t: 5, f: G }, { t: 6, f: G }];
+    const e = engine5(notes, {
+        starPower: [{ start_time: 0.9, end_time: 1.1 }, { start_time: 3.9, end_time: 4.1 }],
+        solos: [{ start_time: 3.9, end_time: 6.5 }],
+    });
+    const log = collect(e, ['miss', 'sp-phrase-miss', 'solo-end', 'sustain-end']);
+    press(e, 0.5, 'green');
+    strum(e, 1); // phrase 1 awarded, sustain running
+    assert.equal(e.getState().starPower.amount, 0.25);
+    e.update(1.5);
+    assert.ok(e.getState().score > 50);
+    e.reset(4.5);
+    const s = e.getState();
+    assert.equal(s.score, 0);
+    assert.equal(s.combo, 0);
+    assert.equal(s.notesMissed, 0);
+    assert.equal(s.stars, 0);
+    assert.deepEqual(s.starPower, { amount: 0, active: false });
+    assert.deepEqual(s.solo, { active: false, hit: 0, total: 0 });
+    assert.deepEqual(log, [], 'no miss, phrase, solo or sustain events from the reset');
+    assert.deepEqual([0, 1, 2].map(i => e.noteState(i)), [null, null, null]);
+    // Note 3 starts the rest of the solo (the solo's first note was behind t).
+    strum(e, 5);
+    assert.deepEqual(e.getState().solo, { active: true, hit: 1, total: 2 });
+    strum(e, 6);
+    assert.equal(e.getState().notesMissed, 0);
+    assert.equal(log.filter(x => x[0] === 'solo-end').length, 1);
+    assert.equal(log.find(x => x[0] === 'solo-end')[1].percent, 100);
+});
+
 // ── API ──────────────────────────────────────────────────────────────────────
 
 test('getState has the Task 4 fields', () => {

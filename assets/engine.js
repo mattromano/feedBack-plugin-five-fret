@@ -8,12 +8,20 @@
  *   YARG.Core/Engine/Guitar/GuitarEngine.cs
  *   YARG.Core/Engine/Guitar/GuitarEngineParameters.cs
  *   YARG.Core/Engine/Guitar/GuitarStats.cs
- *   YARG.Core/Engine/BaseEngine.cs, BaseEngine.Generic.cs (the parts the hit logic uses)
+ *   YARG.Core/Engine/BaseEngine.cs, BaseEngine.Generic.cs (hit logic, sustains, star power, solos, stars)
+ *   YARG.Core/Engine/SustainList.cs (ActiveSustain), YARG.Core/Engine/SoloSection.cs
  *   YARG.Core/Engine/EngineTimer.cs
  *   YARG.Core/Engine/HitWindowSettings.cs
+ *   YARG.Core/Engine/BaseStats.cs (TotalScore), YARG.Core/YargMath.cs (InverseLerpF)
+ *   YARG.Core/Chart/Sync/TimeSignatureEvent.cs (MEASURE_RESOLUTION_SCALE: star power measure ticks)
+ *   YARG.Core/Chart/Loaders/MoonSong/MoonSongLoader.Guitar.cs (GetGuitarNoteFlags: extended sustains)
  *   YARG.Core/Input/InputActions.cs (GuitarAction)
  *   YARG.Core/Chart/Events/WaitCountdown.cs (MIN_SECONDS)
  *   YARG.Core/Game/Presets/EnginePreset.Instruments.cs (FiveFretGuitarPreset defaults)
+ * and from the YARG game (https://github.com/YARC-Official/YARG, also LGPL-3.0), master at commit
+ * f5bfbe6996b4af35722d4204a93c6cc5c8f52a45:
+ *   Assets/Script/Gameplay/Player/FiveFretGuitarPlayer.cs (guitar and bass star score thresholds)
+ *   Assets/Script/Gameplay/Player/BasePlayer.cs (SoloBonusStarMultiplierThresholds)
  *
  * Copyright (c) YARC (YARG) contributors
  * Licensed under the GNU Lesser General Public License v3.0
@@ -49,39 +57,100 @@
  *  - Overstrum (GuitarEngine.Overstrum): resets the combo and adds 1 to overstrums. Ignored before the
  *    first note is resolved, after the last note, and during a WaitCountdown (a gap of 9 s or more).
  *  - Score: 50 points per note plus 50 per extra fret of a chord, times the multiplier.
- *    Multiplier = min(floor(combo / 10) + 1, max), max 4 for guitar and 6 for bass. Combo +1 per note
- *    (a chord is one note). The multiplier updates before the note scores, so the 10th note scores 2x.
+ *    Multiplier = min(floor(combo / 10) + 1, max), max 4 for guitar and 6 for bass, doubled while star
+ *    power is active. Combo +1 per note (a chord is one note). The multiplier updates before the note
+ *    scores, so the 10th note scores 2x. getState().score is YARG's TotalScore: committed points, the
+ *    points of the sustains being held (PendingScore) and solo bonuses.
+ *  - Sustains (UpdateSustains, StartSustain, EndSustain, CanSustainHold): a hit note with a length
+ *    starts a sustain worth 25 points per beat (POINTS_PER_BEAT), rounded up, times the multiplier
+ *    when it is scored. It is scored in full once the time passes the burst point, a quarter beat
+ *    before its end (SUSTAIN_BURST_FRACTION; at once if it is shorter than that). Letting go of the
+ *    frets starts a 25 ms drop leniency (SustainDropLeniency x song speed); still let go when it runs
+ *    out, the sustain is dropped and scored up to then. Extended sustains (a sustain still running
+ *    when the next note starts) only need their own frets held, and those frets are masked out
+ *    when the next notes are matched. Hitting a note that shares a fret with an active sustain ends
+ *    that sustain without scoring the rest. An overstrum ends every active sustain and adds its points
+ *    so far without the multiplier (GuitarEngine.Overstrum).
+ *  - Star power (GainStarPower, AwardStarPower, StripStarPower, ActivateStarPower, ReleaseStarPower,
+ *    UpdateStarPower): the bar holds 8 measures (STAR_POWER_MAX_MEASURES). Hitting the last note of a
+ *    phrase whose notes were all hit adds a quarter bar (2 measures). A missed note, or an overstrum on
+ *    a phrase note other than its first, fails the phrase. The 'star_power' button activates star
+ *    power while it is held and the bar is at least half full. While active, the bar drains one measure
+ *    per measure of song time, so a full bar lasts 8 measures, and the multiplier is doubled. While
+ *    the whammy moves (each change keeps it "on" for 0.25 s, StarPowerWhammyBuffer) and a sustain of a
+ *    star power note is held, the bar gains a full bar per 30 beats (CalculateStarPowerGain: gain
+ *    factor 32 / 30 measure ticks per quarter tick), active or not.
+ *  - Solos (GetSoloSections, HandleSoloNote, StartSolo, EndSolo): a solo starts when its first note
+ *    is hit or missed and ends with its last. Bonus: 0 below 60% of its notes hit, else
+ *    100 x notes hit x (percent - 60%) / 40%, rounded down to a multiple of 50. The bonus is not
+ *    multiplied.
+ *  - Stars (CalculateChartScores, PopulateStarScoreThresholds, UpdateStars): BaseScore = the score of a
+ *    full combo with every sustain held and no star power (multiplier from the combo before each
+ *    note). Threshold i = floor(BaseScore x star[i] + max solo bonus x solo[i]) (single-precision
+ *    floats, as YARG), with star = [0.06, 0.12, 0.2, 0.47, 0.78, 1.15] for guitar and
+ *    [0.05, 0.1, 0.19, 0.47, 0.78, 1.15] for bass (FiveFretGuitarPlayer.cs), solo =
+ *    [0.05, 0.1, 0.2, 0.35, 0.65, 0.95] (BasePlayer.cs) and the max solo bonus = 100 per solo note.
+ *    stars = thresholds passed + progress to the next, 0..6 (5 = five stars, 6 = gold stars).
  *
  * Deviations from YARG:
  *  1. Gamepad mode (opts.gamepadMode, Clone Hero's rule; a separate hit path, not in YARG): strum inputs
  *     are ignored. Only presses count: whenever a fret goes down, the first unhit note is hit if it is
  *     inside its hit window and the held frets then match it: chords exactly (so a chord is hit when its
- *     last fret goes down), single notes with YARG's anchoring rule (lower frets may be held). Releases
- *     never hit. Note type (strum/HOPO/tap) does not matter. Open notes are hit only by pressing the
- *     'open' action with no frets held. A press or release that matches nothing is
- *     ignored (no overstrum, no ghost input); a note is missed only when its window passes.
+ *     last fret goes down), single notes with YARG's anchoring rule (lower frets may be held); the frets
+ *     of extended sustains are masked out first, as in CanNoteBeHit. Releases never hit. Note type
+ *     (strum/HOPO/tap) does not matter. Open notes are hit only by pressing the 'open' action with no
+ *     frets held. A press or release that matches nothing is ignored (no overstrum, no ghost input); a
+ *     note is missed only when its window passes. Sustains, star power, solos and stars work as in
+ *     strum mode.
  *  2. Time model: YARG queues inputs and runs in chart ticks. This engine uses seconds and runs input()
  *     and update() immediately. Times earlier than the engine clock are clamped forward, as YARG's
  *     QueueInput does. Between calls, the engine runs at each "interesting" time in order (note front
- *     ends, note back ends + 1 ulp, leniency timer ends), as YARG's queued updates do. The hit-logic
+ *     ends, note back ends + 1 ulp, leniency timer ends, sustain drop / burst / end times, the whammy
+ *     timer end, the star power end), as YARG's queued updates do. The hit-logic
  *     re-run loop stops after 1000 passes (a safety net; YARG has none).
  *  3. Not ported: bots, trill/tremolo lanes and their leniency, Big Rock Endings / codas, solo taps
  *     (SoloTaps; off by default), the six-fret engine, wildcard notes, band/unison bonus and
  *     revives, replays, and the HoposStrummed stat (YARG never increments it).
- *  4. Not ported yet (Task 5 adds them at the hooks marked "Task 5"): sustains, whammy, star power,
- *     solos and stars. The 'whammy' and 'star_power' inputs are recorded but have no effect yet.
+ *  4. Beats and measures come from chart.beats ([{time, measure}], one entry per beat, measure >= 0
+ *     on a downbeat) in place of YARG's tick sync track. A beat is one chart.beats entry (YARG: a
+ *     quarter note, Resolution ticks), so sustain points and whammy gain follow the chart's beats, which
+ *     differ from YARG only where the beat is not a quarter note. The star power position is the
+ *     fractional measure number, interpolated between downbeats (YARG: rounded integer measure ticks),
+ *     so star power has no tick rounding. With fewer than two downbeats, 4 beats make a measure;
+ *     with fewer than two beats, 120 BPM in 4/4 is assumed. Times outside the beat list are
+ *     extrapolated at the tempo of its first or last interval.
  *  5. Input actions: YARG's GuitarAction values become names ('green'..'orange', 'strum_up',
  *     'strum_down', 'whammy', 'star_power') plus 'open', which only gamepad mode uses (deviation 1). In
- *     strum mode 'open' is ignored; open notes are strummed with no frets held, as in YARG.
+ *     strum mode 'open' is ignored; open notes are strummed with no frets held, as in YARG. A 'whammy'
+ *     input (value 0..1) counts as whammy movement only when its value changes, as YARG's input layer
+ *     only sends changes.
  *  6. Chart import: feedBack wire notes {t, f, l?, h?, tap?} become one note per chord (f is the fret
  *     mask, 0 = open; tap beats h). The wire drops the open bit from open+fret chords, so YARG's open
  *     chord rules never apply. Notes less than 1 ms apart are merged into one chord (OR-ed frets, the
  *     first note's type, the longest sustain); noteState() of a merged index reports the chord.
+ *     Chords therefore never have disjoint sustains (YARG's Disjoint flag). A note has an extended
+ *     sustain when its sustain ends more than 1 us after the next note starts, or the previous
+ *     note's sustain ends more than 1 us after it starts and it has a sustain itself
+ *     (GetGuitarNoteFlags; YARG compares ticks with NoteSnapThreshold). Star power phrases and solos
+ *     come from chart.starPower / chart.solos ([{start_time, end_time}] seconds); a note belongs to
+ *     one when start - 0.1 ms <= t < end - 0.1 ms (YARG: tick ranges), and ranges without notes are
+ *     left out.
  *  7. Reporting: getState().notesMissed counts notes actually missed so far (YARG reports
  *     TotalNotes - NotesHit). 'combo-reset' fires on every combo reset, as YARG's OnComboReset does, and
- *     carries the combo it reset from.
- *  8. reset(t) (seeking): YARG's Reset(keepCurrentButtons: true), then notes whose window has already
- *     passed at t are set aside without a hit or miss and the engine clock starts at t.
+ *     carries the combo it reset from. A solo's percent is reported as 0..100.
+ *  8. reset(t) (seeking): YARG's Reset(keepCurrentButtons: true), which zeroes the stats and clears
+ *     star power, active sustains and solo progress. Then notes whose window has already passed at t
+ *     are set aside without a hit or miss and the engine clock starts at t. A solo already under way at
+ *     t restarts at the first note left, counting only the notes left (as YARG's practice mode does
+ *     with its sliced chart); a star power phrase partly behind t can still be completed. Star
+ *     thresholds stay those of the whole chart.
+ *  9. Not ported from star power and sustains: RebaseSustains (it re-splits a held sustain's points
+ *     at a multiplier change, but YARG then scores the whole sustain at the multiplier in force when it
+ *     ends, so it changes no score), the queued "half bar" / "bar full" / whammy SP-end times (the
+ *     'sp-ready' event and the end of star power fire on the next update), revives, unison bonus and
+ *     the star power stats (StarPowerPhrasesHit, TimeInStarPower, ...).
+ * 10. Overstrum during the tail of a sustain that was already scored in full (past its burst point)
+ *     does not add its points a second time (YARG's Overstrum adds them again).
  * -------------------------------------------------------------------------------------------------
  */
 (function (root, factory) {
@@ -101,8 +170,22 @@
 
     // BaseEngine.cs
     const POINTS_PER_NOTE = 50;
+    const POINTS_PER_BEAT = 25;          // sustain points per beat
+    const STAR_POWER_MAX_MEASURES = 8;   // a full star power bar
+    const SUSTAIN_BURST_FRACTION = 4;    // a sustain is fully scored a quarter beat before its end
     // BaseEngine.UpdateMultiplier: (Combo / 10) + 1
     const NOTES_PER_MULTIPLIER = 10;
+    // TimeSignatureEvent.MEASURE_RESOLUTION_SCALE: measure ticks per measure = 4 x quarter ticks per beat.
+    const MEASURE_RESOLUTION_SCALE = 4;
+    // BaseEngine.Generic.EndSolo
+    const SOLO_MIN_PERCENT = 0.6;
+    const SOLO_POINTS_PER_NOTE = 100;
+    const SOLO_ROUND_TO = 50;
+
+    // Star score thresholds (YARG game repo): fractions of BaseScore and of the max solo bonus.
+    const GUITAR_STAR_THRESHOLDS = Object.freeze([0.06, 0.12, 0.2, 0.47, 0.78, 1.15]);  // FiveFretGuitarPlayer.cs
+    const BASS_STAR_THRESHOLDS = Object.freeze([0.05, 0.1, 0.19, 0.47, 0.78, 1.15]);    // FiveFretGuitarPlayer.cs
+    const SOLO_BONUS_STAR_THRESHOLDS = Object.freeze([0.05, 0.1, 0.2, 0.35, 0.65, 0.95]); // BasePlayer.cs
 
     // GuitarAction (InputActions.cs): GreenFret..OrangeFret = 0..4, so a fret's bit is 1 << action.
     const FRET_ACTIONS = Object.freeze({ green: 0, red: 1, yellow: 2, blue: 3, orange: 4 });
@@ -110,9 +193,15 @@
         'strum_up', 'strum_down', 'open', 'whammy', 'star_power']);
 
     const NOTE_TYPE = Object.freeze({ STRUM: 'strum', HOPO: 'hopo', TAP: 'tap' });
-    const EVENTS = Object.freeze(['hit', 'miss', 'overstrum', 'combo-reset']);
+    const EVENTS = Object.freeze(['hit', 'miss', 'overstrum', 'combo-reset',
+        'sustain-start', 'sustain-end', 'sp-phrase', 'sp-phrase-miss', 'sp-ready', 'sp-activate', 'sp-end',
+        'solo-start', 'solo-end']);
 
     const CHORD_EPS = 0.001;            // wire notes closer than 1 ms form one chord
+    const SECTION_EPS = 0.0001;         // star power / solo range edges (deviation 6)
+    const EXTENDED_EPS = 0.000001;      // sustain overlap needed for an extended sustain (deviation 6)
+    const SP_EPS = 1e-7;                // star power amounts, in measures (float noise)
+    const BEAT_EPS = 1e-9;              // sustain points, in points (float noise before Math.ceil)
     const NOT_STARTED = Number.MAX_VALUE; // EngineTimer.NOT_STARTED (double.MaxValue)
     const MIN_TIME = -Number.MAX_VALUE;   // BaseEngine.Reset: CurrentTime = double.MinValue
     const MAX_LOOP_PASSES = 1000;        // safety net for RunEngineLoop's do/while (YARG has none)
@@ -127,6 +216,10 @@
      *  - hopoLeniency 0.08, strumLeniency 0.05, strumLeniencySmall 0.025, antiGhosting true,
      *    infiniteFrontEnd false.
      *  - waitCountdownSeconds: WaitCountdown.MIN_SECONDS = 9.
+     *  - sustainDropLeniency 0.025 (DEFAULT_SUSTAIN_DROP_LENIENCY), starPowerWhammyBuffer 0.25
+     *    (DEFAULT_WHAMMY_BUFFER), noStarPowerOverlap false.
+     *  - starMultiplierThresholds: FiveFretGuitarPlayer.cs (guitar or bass);
+     *    soloBonusStarMultiplierThresholds: BasePlayer.cs.
      */
     function defaultParams(instrument) {
         return {
@@ -149,6 +242,13 @@
             infiniteFrontEnd: false,
             antiGhosting: true,
             waitCountdownSeconds: 9,
+            sustainPointsPerBeat: POINTS_PER_BEAT,
+            sustainDropLeniency: 0.025,
+            starPowerWhammyBuffer: 0.25,
+            starPowerMeasures: STAR_POWER_MAX_MEASURES,
+            noStarPowerOverlap: false,
+            starMultiplierThresholds: (instrument === 'bass' ? BASS_STAR_THRESHOLDS : GUITAR_STAR_THRESHOLDS).slice(),
+            soloBonusStarMultiplierThresholds: SOLO_BONUS_STAR_THRESHOLDS.slice(),
         };
     }
 
@@ -275,16 +375,106 @@
                 mask: frets || OPEN_MASK, type: noteType(n),
                 prev: last || null, next: null, front: 0, back: 0,
                 hit: false, missed: false, skipped: false, hitTime: null, offset: null,
+                extended: false, phrase: null, sp: false, solo: null,
+                beat: 0, endBeat: 0, end: t, burstTime: t,
             };
             if (last) last.next = note;
             notes.push(note);
             bySrc.set(i, note);
+        }
+        // MoonSongLoader.Guitar.GetGuitarNoteFlags: extended sustains (forwards and backwards).
+        for (const note of notes) {
+            const end = note.t + note.len;
+            const forwards = note.next !== null && end > note.next.t + EXTENDED_EPS;
+            const backwards = note.prev !== null && note.len > 0 && note.prev.t + note.prev.len > note.t + EXTENDED_EPS;
+            note.extended = forwards || backwards;
         }
         return { notes, bySrc };
     }
 
     function isChord(note) { return popcount(note.mask & FRET_MASK) > 1; }
     function resolved(note) { return note.hit || note.missed || note.skipped; }
+
+    /**
+     * Star power phrases / solos ([{start_time, end_time}] seconds) -> sections over the notes they
+     * contain, in time order: { index, start, end, first, last, count }. Each note in a section gets
+     * note[key] = section. Ranges with no notes are left out (deviation 6).
+     */
+    function buildSections(notes, ranges, key) {
+        const list = [];
+        for (const r of Array.isArray(ranges) ? ranges : []) {
+            const start = r ? +r.start_time : NaN;
+            const end = r ? +r.end_time : NaN;
+            if (Number.isFinite(start) && Number.isFinite(end) && end > start) list.push({ start, end });
+        }
+        list.sort((a, b) => a.start - b.start);
+        const sections = [];
+        for (const { start, end } of list) {
+            const members = notes.filter(n => n.t >= start - SECTION_EPS && n.t < end - SECTION_EPS);
+            if (!members.length) continue;
+            const section = {
+                index: sections.length, start, end,
+                first: members[0], last: members[members.length - 1], count: members.length,
+            };
+            for (const n of members) n[key] = section;
+            sections.push(section);
+        }
+        return sections;
+    }
+
+    // ── Beats and measures (stand-in for YARG's SyncTrack, deviation 4) ─────────
+
+    // A piecewise-linear, increasing map xs -> ys, extrapolated at the slope of the first / last interval.
+    function linearMap(xs, ys) {
+        const n = xs.length;
+        const first = (ys[1] - ys[0]) / (xs[1] - xs[0]);
+        const last = (ys[n - 1] - ys[n - 2]) / (xs[n - 1] - xs[n - 2]);
+        function lookup(from, to, v, s0, s1) {
+            if (v <= from[0]) return to[0] - (from[0] - v) * s0;
+            if (v >= from[n - 1]) return to[n - 1] + (v - from[n - 1]) * s1;
+            let lo = 0, hi = n - 1; // from[lo] <= v < from[hi]
+            while (hi - lo > 1) {
+                const mid = (lo + hi) >> 1;
+                if (from[mid] <= v) lo = mid; else hi = mid;
+            }
+            return to[lo] + (v - from[lo]) * (to[hi] - to[lo]) / (from[hi] - from[lo]);
+        }
+        return {
+            fwd: (x) => lookup(xs, ys, x, first, last),
+            inv: (y) => lookup(ys, xs, y, 1 / first, 1 / last),
+        };
+    }
+
+    /**
+     * chart.beats ([{time, measure}], measure >= 0 on downbeats) -> beat and measure positions.
+     * Returns { beatAt(t), timeAtBeat(b), measureAt(t), timeAtMeasure(m) }.
+     */
+    function buildTempoMap(beats) {
+        const raw = [];
+        for (const b of Array.isArray(beats) ? beats : []) {
+            const isObj = b !== null && typeof b === 'object';
+            const t = isObj ? +(b.time !== undefined ? b.time : b.t) : +b;
+            if (!Number.isFinite(t)) continue;
+            raw.push({ t, down: isObj && b.measure !== null && b.measure !== undefined && +b.measure >= 0 });
+        }
+        raw.sort((a, b) => a.t - b.t);
+        const list = raw.filter((b, i) => i === 0 || b.t > raw[i - 1].t);
+
+        let beatMap, measureMap;
+        if (list.length >= 2) {
+            const times = list.map(b => b.t);
+            beatMap = linearMap(times, times.map((_, i) => i));
+            const downs = list.filter(b => b.down).map(b => b.t);
+            measureMap = downs.length >= 2
+                ? linearMap(downs, downs.map((_, i) => i))
+                : linearMap(times, times.map((_, i) => i / 4));
+        } else {
+            // 120 BPM in 4/4: 2 beats and half a measure per second.
+            beatMap = linearMap([0, 1], [0, 2]);
+            measureMap = linearMap([0, 1], [0, 0.5]);
+        }
+        return { beatAt: beatMap.fwd, timeAtBeat: beatMap.inv, measureAt: measureMap.fwd, timeAtMeasure: measureMap.inv };
+    }
 
     // ── Engine ─────────────────────────────────────────────────────────────────
 
@@ -320,11 +510,34 @@
             latestEnd = Math.max(latestEnd, note.t + note.len);
         }
 
-        // GuitarEngine constructor: leniency timers.
+        // Beats (sustain points, whammy) and measures (star power) from chart.beats (deviation 4).
+        this._tempo = buildTempoMap(chart.beats);
+        for (const note of this.notes) {
+            note.beat = this._tempo.beatAt(note.t);
+            note.end = note.t + note.len;
+            note.endBeat = note.len > 0 ? this._tempo.beatAt(note.end) : note.beat;
+            // ActiveSustain.GetEndTime(SustainBurstThreshold): at the note itself if it is too short.
+            const burst = 1 / SUSTAIN_BURST_FRACTION;
+            note.burstTime = note.endBeat - note.beat < burst ? note.t : this._tempo.timeAtBeat(note.endBeat - burst);
+        }
+
+        // Star power phrases and solos (GetSoloSections), deviation 6.
+        this.phrases = buildSections(this.notes, chart.starPower, 'phrase');
+        this.solos = buildSections(this.notes, chart.solos, 'solo');
+
+        // SetInitialStats: BaseScore (CalculateChartScores), max solo bonus, star thresholds.
+        this.baseScore = this._calculateBaseScore();
+        this.maxSoloBonus = this.solos.reduce((sum, s) => sum + s.count * SOLO_POINTS_PER_NOTE, 0);
+        this.starThresholds = populateStarScoreThresholds(this.params.starMultiplierThresholds,
+            this.params.soloBonusStarMultiplierThresholds, this.baseScore, this.maxSoloBonus);
+
+        // GuitarEngine constructor: leniency timers. BaseEngine.Generic: the star power whammy timer.
         this.strumLeniencyTimer = new EngineTimer(this.params.strumLeniency);
         this.hopoLeniencyTimer = new EngineTimer(this.params.hopoLeniency);
+        this.whammyTimer = new EngineTimer(this.params.starPowerWhammyBuffer);
         this.strumLeniencyTimer.speed = this.params.songSpeed;
         this.hopoLeniencyTimer.speed = this.params.songSpeed;
+        this.whammyTimer.speed = this.params.songSpeed;
 
         this.inputButtonMask = 0;
         this.lastButtonMask = 0;
@@ -338,6 +551,37 @@
         const previousToCurrent = note.prev ? (note.t - note.prev.t) / 2 : currentToNext;
         return previousToCurrent + currentToNext;
     };
+
+    // Sustain points of a note held from its start to `beat` (CalculateSustainPoints, before rounding up).
+    Engine.prototype._sustainPoints = function (note, beat) {
+        const held = clamp(beat, note.beat, note.endBeat) - note.beat;
+        return held * this.params.sustainPointsPerBeat;
+    };
+    // Math.Ceiling on sustain points, ignoring float noise from the seconds -> beats conversion.
+    function ceilPoints(points) { return Math.ceil(points - BEAT_EPS); }
+
+    // GuitarEngine.CalculateChartScores: a full combo with every sustain held and no star power.
+    Engine.prototype._calculateBaseScore = function () {
+        const p = this.params;
+        let baseScore = 0;
+        let combo = 0;
+        for (const note of this.notes) {
+            const multiplier = Math.min(Math.floor(combo / p.notesPerMultiplier) + 1, p.maxMultiplier);
+            baseScore += multiplier * this._notePoints(note);
+            baseScore += multiplier * ceilPoints(this._sustainPoints(note, note.endBeat));
+            combo++;
+        }
+        return Math.round(baseScore);
+    };
+
+    // BaseEngine.Generic.PopulateStarScoreThresholds. YARG multiplies int by float in single precision.
+    function populateStarScoreThresholds(multipliers, soloMultipliers, baseScore, soloScore) {
+        return multipliers.map((m, i) => {
+            const fromBase = Math.fround(baseScore * Math.fround(m));
+            const fromSolo = Math.fround(soloScore * Math.fround(soloMultipliers[i] || 0));
+            return Math.floor(Math.fround(fromBase + fromSolo));
+        });
+    }
 
     // YargFiveFretGuitarEngine.Reset / GuitarEngine.Reset / BaseEngine(.Generic).Reset
     Engine.prototype._resetState = function (keepCurrentButtons) {
@@ -366,17 +610,35 @@
         this.waitCountdownIndex = 0;
         this.isStarPowerInputActive = false;
         this.whammy = 0;
-        // Task 5: active sustains (YARG's ActiveSustains). Always empty until sustains are ported.
+        this.whammyTimer.reset();
+        this.firstWhammyBeat = 0;
+        // ActiveSustains: { note, finishedScoring, leniencyHeld, leniencyDropTime }
         this.activeSustains = [];
+        this.currentBeat = -Infinity; // CurrentTick / LastTick, in beats
+        this.lastBeat = -Infinity;
 
+        // Star power, in measures (a full bar = params.starPowerMeasures).
+        this.sp = { amount: 0, active: false, pos: 0, activationTime: 0, endPos: 0, endTime: 0 };
+        this.activeSolo = null;
+        this.starIndex = 0;
+
+        // score = CommittedScore; getState().score adds pendingScore and soloBonuses (TotalScore).
         this.stats = {
-            score: 0, noteScore: 0, combo: 0, maxCombo: 0, multiplier: 1,
+            score: 0, noteScore: 0, pendingScore: 0, soloBonuses: 0, stars: 0,
+            combo: 0, maxCombo: 0, multiplier: 1,
             notesHit: 0, notesMissed: 0, overstrums: 0, ghostInputs: 0,
         };
 
         for (const note of this.notes) {
             note.hit = false; note.missed = false; note.skipped = false;
             note.hitTime = null; note.offset = null;
+            note.sp = note.phrase !== null; // StripStarPower clears it
+        }
+        for (const solo of this.solos) {
+            solo.startNote = solo.first; // a seek may start a solo part-way (deviation 8)
+            solo.total = solo.count;
+            solo.hit = 0;
+            solo.bonus = 0;
         }
 
         if (keepCurrentButtons && buttons !== undefined) this.effectiveButtonMask = buttons;
@@ -417,7 +679,7 @@
         if (!Number.isFinite(t) || ACTIONS.indexOf(action) < 0) return;
         if (t < this.currentTime) t = this.currentTime;
         this._runQueuedUpdates(t);
-        this._mutateStateWithInput(action, value);
+        this._mutateStateWithInput(t, action, value);
         this._runEngineLoop(t);
     };
 
@@ -444,13 +706,21 @@
             note.skipped = true;
             this.noteIndex++;
         }
+        // A solo under way at t starts at the first note left and counts only the notes left.
+        for (const solo of this.solos) {
+            if (solo.first.index < this.noteIndex && solo.last.index >= this.noteIndex) {
+                solo.startNote = this.notes[this.noteIndex];
+                solo.total = solo.last.index - this.noteIndex + 1;
+            }
+        }
         this._runEngineLoop(t);
     };
 
     Engine.prototype.getState = function () {
         const s = this.stats;
+        const solo = this.activeSolo;
         return {
-            score: s.score,
+            score: this._totalScore(),
             combo: s.combo,
             maxCombo: s.maxCombo,
             multiplier: s.multiplier,
@@ -461,6 +731,9 @@
             overstrums: s.overstrums,
             ghostInputs: s.ghostInputs,
             time: this.currentTime,
+            starPower: { amount: this.sp.amount / this._fullBar(), active: this.sp.active },
+            stars: s.stars,
+            solo: solo ? { active: true, hit: solo.hit, total: solo.total } : { active: false, hit: 0, total: 0 },
         };
     };
 
@@ -511,7 +784,14 @@
         };
         if (this.hopoLeniencyTimer.active) consider(this.hopoLeniencyTimer.endTime);
         if (this.strumLeniencyTimer.active) consider(this.strumLeniencyTimer.endTime);
-        // Task 5: sustain drop/burst/end times, star power whammy and end times.
+        const p = this.params;
+        for (const s of this.activeSustains) {
+            if (s.leniencyHeld) consider(s.leniencyDropTime + p.sustainDropLeniency * p.songSpeed);
+            consider(s.note.burstTime); // scoring finishes here
+            consider(s.note.end);       // the sustain ends here
+        }
+        if (this.whammyTimer.active) consider(this.whammyTimer.endTime);
+        if (this.sp.active) consider(this.sp.endTime);
         for (let i = this.noteIndex; i < this.notes.length; i++) {
             const note = this.notes[i];
             const front = note.t + note.front;
@@ -526,7 +806,9 @@
     // BaseEngine.Generic.UpdateTimeVariables (WaitCountdown part; codas not ported)
     Engine.prototype._updateTimeVariables = function (time) {
         this.lastUpdateTime = this.currentTime;
+        this.lastBeat = this.currentBeat;
         this.currentTime = time;
+        this.currentBeat = this._tempo.beatAt(time);
         const cds = this.waitCountdowns;
         while (this.waitCountdownIndex < cds.length && time >= cds[this.waitCountdownIndex].end) {
             this.waitCountdownIndex++;
@@ -535,19 +817,207 @@
             time >= cds[this.waitCountdownIndex].start;
     };
 
-    // Task 5: BaseEngine.Generic.UpdateStarPower (drain, whammy gain, activation).
-    Engine.prototype._updateStarPower = function () {};
+    // ── Star power (BaseEngine.cs, BaseEngine.Generic.cs), in measures ──
 
-    // Task 5: BaseEngine.Generic.UpdateSustains (scoring, drops, bursts).
-    Engine.prototype._updateSustains = function () {};
+    Engine.prototype._fullBar = function () { return this.params.starPowerMeasures; };
+    Engine.prototype._halfBar = function () { return this.params.starPowerMeasures / 2; };
+    Engine.prototype._quarterBar = function () { return this.params.starPowerMeasures / 4; };
+    Engine.prototype._canStarPowerActivate = function () { return this.sp.amount >= this._halfBar() - SP_EPS; };
+
+    // BaseEngine.Generic.UpdateStarPower: whammy gain, drain, release, activation.
+    Engine.prototype._updateStarPower = function () {
+        const sp = this.sp;
+        if (this._isStarPowerSustainActive() && this.whammyTimer.active) {
+            const gain = this._whammyGain(this.currentBeat, Math.max(this.lastBeat, this.firstWhammyBeat));
+            if (!sp.active && sp.amount < this._halfBar() - SP_EPS && sp.amount + gain >= this._halfBar() - SP_EPS) {
+                this._emit('sp-ready', { time: this.currentTime });
+            }
+            // Don't cap until the drain has been calculated.
+            sp.amount += gain;
+            if (sp.active) this._updateStarPowerEnds();
+        }
+
+        const previousPos = sp.pos;
+        sp.pos = this._tempo.measureAt(this.currentTime);
+        if (sp.active) {
+            const drain = sp.pos - previousPos;
+            sp.amount = sp.amount <= drain + SP_EPS ? 0 : sp.amount - drain;
+        }
+
+        // Limit the amount to a full bar.
+        if (sp.amount > this._fullBar()) {
+            sp.amount = this._fullBar();
+            if (sp.active) this._updateStarPowerEnds();
+        }
+
+        if (sp.active && sp.amount === 0) this._releaseStarPower();
+        if (this.isStarPowerInputActive && this._canStarPowerActivate()) this._activateStarPower();
+
+        if (this.whammyTimer.active && this.whammyTimer.isExpired(this.currentTime)) this.whammyTimer.disable();
+    };
+
+    // CalculateStarPowerGain: (quarter ticks) x MAX_BEATS / (MAX_BEATS - 2) measure ticks, here in
+    // measures: a full bar per MAX_BEATS - 2 = 30 beats of whammy.
+    Engine.prototype._whammyGain = function (beat, lastBeat) {
+        const maxBeats = this.params.starPowerMeasures * 4;
+        const gainFactor = maxBeats / (maxBeats - 2); // - 2 for leniency
+        return Math.max(0, beat - lastBeat) * gainFactor / MEASURE_RESOLUTION_SCALE;
+    };
+
+    // BaseEngine.Generic.IsStarPowerSustainActive
+    Engine.prototype._isStarPowerSustainActive = function () {
+        return this.activeSustains.some(s => s.note.sp);
+    };
+
+    // BaseEngine.Generic.StartWhammyTimer
+    Engine.prototype._startWhammyTimer = function (time) {
+        if (!this.whammyTimer.active) this.firstWhammyBeat = this._tempo.beatAt(time);
+        this.whammyTimer.start(time);
+    };
+
+    // BaseEngine.UpdateStarPowerEnds
+    Engine.prototype._updateStarPowerEnds = function () {
+        const sp = this.sp;
+        sp.endPos = sp.pos + sp.amount;
+        sp.endTime = this._tempo.timeAtMeasure(sp.endPos);
+    };
+
+    // BaseEngine.GainStarPower
+    Engine.prototype._gainStarPower = function (measures) {
+        const sp = this.sp;
+        const previous = sp.amount;
+        if (!sp.active && previous < this._halfBar() - SP_EPS && previous + measures >= this._halfBar() - SP_EPS) {
+            this._emit('sp-ready', { time: this.currentTime });
+        }
+        sp.amount = Math.min(this._fullBar(), sp.amount + measures);
+        if (sp.active) this._updateStarPowerEnds();
+    };
+
+    // BaseEngine.ActivateStarPower (revives not ported)
+    Engine.prototype._activateStarPower = function () {
+        const sp = this.sp;
+        if (sp.active) return;
+        sp.activationTime = this.currentTime;
+        this._updateStarPowerEnds();
+        sp.active = true;
+        this._updateMultiplier();
+        this._emit('sp-activate', { time: this.currentTime, amount: sp.amount / this._fullBar(), endTime: sp.endTime });
+    };
+
+    // BaseEngine.ReleaseStarPower
+    Engine.prototype._releaseStarPower = function () {
+        this.sp.active = false;
+        this._updateMultiplier();
+        this._emit('sp-end', { time: this.currentTime });
+    };
+
+    // BaseEngine.Generic.AwardStarPower
+    Engine.prototype._awardStarPower = function (note) {
+        this._gainStarPower(this._quarterBar());
+        this._emit('sp-phrase', {
+            time: this.currentTime, index: note.srcIndex, phrase: note.phrase.index,
+            amount: this.sp.amount / this._fullBar(),
+        });
+    };
+
+    // BaseEngine.Generic.StripStarPower: the whole phrase loses its star power.
+    Engine.prototype._stripStarPower = function (note) {
+        if (!note || !note.sp) return;
+        const phrase = note.phrase;
+        for (let n = phrase.first; n; n = n.next) {
+            n.sp = false;
+            if (n === phrase.last) break;
+        }
+        this._emit('sp-phrase-miss', { time: this.currentTime, index: note.srcIndex, phrase: phrase.index });
+    };
+
+    // ── Sustains (BaseEngine.Generic.cs, GuitarEngine.cs) ──
+
+    // BaseEngine.Generic.UpdateSustains: scoring, drops (with leniency), bursts and ends.
+    Engine.prototype._updateSustains = function () {
+        const p = this.params;
+        const time = this.currentTime;
+        let pending = 0;
+        for (let i = 0; i < this.activeSustains.length; i++) {
+            const sustain = this.activeSustains[i];
+            const note = sustain.note;
+
+            // Close enough to the end of the sustain: finish scoring it.
+            const isBurst = time >= note.burstTime;
+            const isEndOfSustain = time >= note.end;
+            const scoreBeat = isBurst || isEndOfSustain ? note.endBeat : this.currentBeat;
+
+            let dropped = false;
+            if (!this._canSustainHold(note)) {
+                if (sustain.leniencyHeld) {
+                    // Held by the sustain drop leniency until it runs out.
+                    if (time >= sustain.leniencyDropTime + p.sustainDropLeniency * p.songSpeed) dropped = true;
+                } else {
+                    sustain.leniencyHeld = true;
+                    sustain.leniencyDropTime = time;
+                }
+            } else {
+                sustain.leniencyHeld = false;
+            }
+
+            if (!sustain.finishedScoring) {
+                if (isBurst || isEndOfSustain) sustain.finishedScoring = true;
+                const points = ceilPoints(this._sustainPoints(note, scoreBeat));
+                if (dropped || isBurst || isEndOfSustain) this._addScorePoints(points);
+                else pending += points * this.stats.multiplier;
+            }
+
+            // Only removed when dropped or at its last moment.
+            if (dropped || isEndOfSustain) {
+                this._endSustain(i, dropped);
+                i--;
+            }
+        }
+        this.stats.pendingScore = pending;
+        this._updateStars();
+    };
+
+    // BaseEngine.Generic.StartSustain
+    Engine.prototype._startSustain = function (note) {
+        this.activeSustains.push({ note, finishedScoring: false, leniencyHeld: false, leniencyDropTime: -9999 });
+        this._emit('sustain-start', { time: this.currentTime, index: note.srcIndex, note: note.src });
+    };
+
+    // BaseEngine.Generic.EndSustain
+    Engine.prototype._endSustain = function (i, dropped) {
+        const sustain = this.activeSustains.splice(i, 1)[0];
+        this._emitSustainEnd(sustain, dropped);
+    };
+    Engine.prototype._emitSustainEnd = function (sustain, dropped) {
+        this._emit('sustain-end', {
+            time: this.currentTime, index: sustain.note.srcIndex, note: sustain.note.src,
+            finished: sustain.finishedScoring, dropped,
+        });
+    };
+
+    // GuitarEngine.CanSustainHold (no disjoint or open-chord notes here)
+    Engine.prototype._canSustainHold = function (note) {
+        if (note.extended) {
+            let buttons = this.effectiveButtonMask;
+            if (note.mask & OPEN_MASK) buttons |= OPEN_MASK;
+            return (note.mask & buttons) === note.mask;
+        }
+        return this._canNoteBeHit(note);
+    };
 
     // ── Input (YargFiveFretGuitarEngine.MutateStateWithInput) ──
 
-    Engine.prototype._mutateStateWithInput = function (action, value) {
+    Engine.prototype._mutateStateWithInput = function (time, action, value) {
         if (action === 'star_power') {
-            this.isStarPowerInputActive = !!value; // Task 5: activation
+            // Activates in UpdateStarPower while held and the bar is at least half full.
+            this.isStarPowerInputActive = !!value;
         } else if (action === 'whammy') {
-            this.whammy = clamp(+value || 0, 0, 1); // Task 5: StartWhammyTimer
+            // Only a change of the whammy value is movement (deviation 5).
+            const whammy = clamp(+value || 0, 0, 1);
+            if (whammy !== this.whammy) {
+                this.whammy = whammy;
+                this._startWhammyTimer(time);
+            }
         } else if (action === 'strum_up' || action === 'strum_down') {
             if (value && !this.gamepadMode) this.hasStrummed = true;
         } else if (action === 'open') {
@@ -707,10 +1177,12 @@
         this._clearInputFlags();
     };
 
+    // Chords need exactly their frets, single notes YARG's anchoring; frets of extended sustains are
+    // masked out first, as in CanNoteBeHit.
     Engine.prototype._gamepadMatches = function (note) {
-        const held = this.effectiveButtonMask;
-        if (isChord(note)) return (held & FRET_MASK) === note.mask;
-        return this._isNoteHittable(note, held);
+        if (!isChord(note)) return this._canNoteBeHit(note);
+        const held = this.effectiveButtonMask & FRET_MASK;
+        return held === note.mask || (this._sustainMaskedButtons() & FRET_MASK) === note.mask;
     };
 
     // 'before' | 'in' | 'missed' (BaseEngine.Generic.IsNoteInWindow)
@@ -722,9 +1194,30 @@
     };
     Engine.prototype._isNoteInWindow = function (note) { return this._windowState(note) === 'in'; };
 
-    // YargFiveFretGuitarEngine.CanNoteBeHit. Task 5: frets of extended sustains are masked out first.
+    // YargFiveFretGuitarEngine.CanNoteBeHit: try with the frets of extended sustains masked out first,
+    // then with every held fret.
     Engine.prototype._canNoteBeHit = function (note) {
+        if (this.activeSustains.length > 0) {
+            let masked = this._sustainMaskedButtons();
+            let buttons = this.effectiveButtonMask;
+            // Nothing left: apply the open mask so open notes can be hit.
+            if (masked === 0) {
+                masked |= OPEN_MASK;
+                buttons |= OPEN_MASK;
+            }
+            // Don't use the masked buttons if they are the same.
+            if (masked !== buttons && this._isNoteHittable(note, masked)) return true;
+        }
         return this._isNoteHittable(note, this.effectiveButtonMask);
+    };
+
+    // The held frets without the frets of extended sustains.
+    Engine.prototype._sustainMaskedButtons = function () {
+        let masked = this.effectiveButtonMask;
+        for (const s of this.activeSustains) {
+            if (s.note.extended) masked &= ~s.note.mask & 0xff;
+        }
+        return masked;
     };
 
     // YargFiveFretGuitarEngine.CanNoteBeHit.IsNoteHittable (no wildcard, disjoint or open-chord notes here)
@@ -806,7 +1299,13 @@
             this.frontEndExpireTime = NOT_STARTED;
         }
         this.strumLeniencyTimer.disable();
-        // Task 5: end active sustains that share a fret with this note.
+        // End active sustains that share a fret with this note (not scored further).
+        for (let i = 0; i < this.activeSustains.length; i++) {
+            if ((this.activeSustains[i].note.mask & note.mask) !== 0) {
+                this._endSustain(i, true);
+                i--;
+            }
+        }
 
         if (resolved(note)) return;
         note.hit = true;
@@ -814,21 +1313,24 @@
         note.offset = this.currentTime - note.t;
 
         this._skipPreviousNotes(note);
-        // Task 5: star power phrase award (IsStarPowerEnd) / strip with NoStarPowerOverlap.
+        if (note.sp) {
+            if (this.sp.active && this.params.noStarPowerOverlap) this._stripStarPower(note);
+            else if (note === note.phrase.last) this._awardStarPower(note);
+        }
 
         this._incrementCombo();
         this.stats.notesHit++;
         this._updateMultiplier();
         const points = this._addScore(note);
-        // Task 5: StartSustain.
+        if (note.len > 0) this._startSustain(note);
 
         this.wasNoteGhosted = false;
         this._emit('hit', {
             time: this.currentTime, index: note.srcIndex, note: note.src, noteTime: note.t,
             offset: note.offset, mask: note.mask & FRET_MASK, type: note.type, points,
-            combo: this.stats.combo, multiplier: this.stats.multiplier, score: this.stats.score,
+            combo: this.stats.combo, multiplier: this.stats.multiplier, score: this._totalScore(),
         });
-        // Task 5: solo note tracking (HandleSoloNote).
+        this._handleSoloNote(note);
         this._advanceToNextNote();
     };
 
@@ -837,14 +1339,46 @@
         this.hasTapped = false;
         if (resolved(note)) return;
         note.missed = true;
-        // Task 5: StripStarPower(note).
+        if (note.sp) this._stripStarPower(note);
         this.wasNoteGhosted = false;
         this._resetCombo();
         this.stats.notesMissed++;
         this._updateMultiplier();
         this._emit('miss', { time: this.currentTime, index: note.srcIndex, note: note.src, noteTime: note.t });
-        // Task 5: solo note tracking (HandleSoloNote).
+        this._handleSoloNote(note);
         this._advanceToNextNote();
+    };
+
+    // ── Solos (BaseEngine.Generic.HandleSoloNote, StartSolo, EndSolo) ──
+
+    Engine.prototype._handleSoloNote = function (note) {
+        const solo = note.solo;
+        if (!solo) return;
+        if (note === solo.startNote) {
+            this.activeSolo = solo;
+            this._emit('solo-start', { time: this.currentTime, solo: solo.index, total: solo.total });
+        }
+        if (note.hit) solo.hit++;
+        if (note === solo.last) this._endSolo(solo);
+    };
+
+    Engine.prototype._endSolo = function (solo) {
+        if (this.activeSolo !== solo) return;
+        const fraction = solo.hit / solo.total;
+        let bonus = 0;
+        if (fraction >= SOLO_MIN_PERCENT) {
+            const multiplier = clamp((fraction - SOLO_MIN_PERCENT) / (1 - SOLO_MIN_PERCENT), 0, 1);
+            const points = SOLO_POINTS_PER_NOTE * solo.hit * multiplier;
+            // Round down to the nearest 50.
+            bonus = points - (points % SOLO_ROUND_TO);
+        }
+        solo.bonus = bonus;
+        this.stats.soloBonuses += bonus;
+        this.activeSolo = null;
+        this._emit('solo-end', {
+            time: this.currentTime, solo: solo.index, hit: solo.hit, total: solo.total,
+            percent: fraction * 100, bonus,
+        });
     };
 
     // BaseEngine.Generic.AdvanceToNextNote
@@ -872,8 +1406,25 @@
         // Past the last note with no active sustains.
         if (this.noteIndex >= this.notes.length && this.activeSustains.length === 0) return;
         if (this.isWaitCountdownActive) return;
-        // Task 5: break all active sustains (scored up to now); strip the star power phrase of the
-        // current note unless it starts the phrase.
+
+        // Break all active sustains: their points so far are added without the multiplier, as YARG
+        // does (unless already scored in full, deviation 10).
+        const broken = this.activeSustains;
+        this.activeSustains = [];
+        for (const sustain of broken) {
+            if (!sustain.finishedScoring) {
+                this.stats.score += ceilPoints(this._sustainPoints(sustain.note, this.currentBeat));
+            }
+            this._emitSustainEnd(sustain, true);
+        }
+        this.stats.pendingScore = 0;
+
+        // The current note's phrase fails, unless the note starts the phrase.
+        if (this.noteIndex < this.notes.length) {
+            const note = this.notes[this.noteIndex];
+            if (note.sp && note !== note.phrase.first) this._stripStarPower(note);
+        }
+
         this._resetCombo();
         this.stats.overstrums++;
         this._updateMultiplier();
@@ -893,19 +1444,49 @@
         this._emit('combo-reset', { time: this.currentTime, combo: previous });
     };
 
-    // BaseEngine.UpdateMultiplier. Task 5: doubled while star power is active; sustains rebased.
+    // BaseEngine.UpdateMultiplier: doubled while star power is active (RebaseSustains: deviation 9).
     Engine.prototype._updateMultiplier = function () {
         const p = this.params;
         this.stats.multiplier = Math.min(Math.floor(this.stats.combo / p.notesPerMultiplier) + 1, p.maxMultiplier);
+        if (this.sp.active) this.stats.multiplier *= 2;
     };
 
     // GuitarEngine.AddScore(note): 50 per note plus 50 per extra chord fret, times the multiplier.
+    Engine.prototype._notePoints = function (note) {
+        return this.params.pointsPerNote * Math.max(1, popcount(note.mask & FRET_MASK));
+    };
     Engine.prototype._addScore = function (note) {
-        const notePoints = this.params.pointsPerNote * Math.max(1, popcount(note.mask & FRET_MASK));
+        const notePoints = this._notePoints(note);
         this.stats.noteScore += notePoints;
-        const points = notePoints * this.stats.multiplier;
-        this.stats.score += points;
-        return points;
+        return this._addScorePoints(notePoints);
+    };
+
+    // BaseEngine.Generic.AddScore(int): points times the multiplier, then UpdateStars.
+    Engine.prototype._addScorePoints = function (points) {
+        const scored = points * this.stats.multiplier;
+        this.stats.score += scored;
+        this._updateStars();
+        return scored;
+    };
+
+    // BaseStats.TotalScore
+    Engine.prototype._totalScore = function () {
+        return this.stats.score + this.stats.pendingScore + this.stats.soloBonuses;
+    };
+
+    // BaseEngine.Generic.UpdateStars: thresholds passed plus the progress to the next one.
+    Engine.prototype._updateStars = function () {
+        const thresholds = this.starThresholds;
+        const total = this._totalScore();
+        while (this.starIndex < thresholds.length && total > thresholds[this.starIndex]) this.starIndex++;
+        let progress = 0;
+        if (this.starIndex < thresholds.length) {
+            const previous = this.starIndex > 0 ? thresholds[this.starIndex - 1] : 0;
+            const next = thresholds[this.starIndex];
+            // YargMath.InverseLerpF
+            progress = previous === next ? (total < previous ? 0 : 1) : (total - previous) / (next - previous);
+        }
+        this.stats.stars = this.starIndex + progress;
     };
 
     function create(chart, opts) { return new Engine(chart, opts); }

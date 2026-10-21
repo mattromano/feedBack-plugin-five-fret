@@ -3,13 +3,13 @@
 Most of this plugin is original code under the **MIT** license (see `README.md`). That includes
 `plugin.json`, the screen, settings and other assets, and the tests other than `tests/engine.test.js`.
 
-Two files are ports of [YARG.Core](https://github.com/YARC-Official/YARG.Core) and are licensed under the
+Two files are ports of [YARG.Core](https://github.com/YARC-Official/YARG.Core) (and YARG) and are licensed under the
 **GNU Lesser General Public License v3.0** (full text in [`LICENSE.LGPL-3.0`](LICENSE.LGPL-3.0); the LGPL
 builds on the GNU GPL v3.0, whose text is in [`LICENSE.GPL-3.0`](LICENSE.GPL-3.0)):
 
 | File | Status |
 |------|--------|
-| `assets/engine.js` | LGPL-3.0. JavaScript port, with modifications, of YARG.Core's five-fret guitar engine, from `master` at commit `9dafd346aff908b6d5b1db250eaf3a2588810c70` (`Engine/Guitar/Engines/YargFiveFretGuitarEngine.cs`, `Engine/Guitar/GuitarEngine.cs`, `GuitarEngineParameters.cs`, `GuitarStats.cs`, `Engine/BaseEngine.cs`, `BaseEngine.Generic.cs`, `EngineTimer.cs`, `HitWindowSettings.cs`, `Input/InputActions.cs` (GuitarAction), `Chart/Events/WaitCountdown.cs`, and the five-fret defaults from `Game/Presets/EnginePreset.Instruments.cs`). Copyright (c) YARC (YARG) contributors. |
+| `assets/engine.js` | LGPL-3.0. JavaScript port, with modifications, of YARG.Core's five-fret guitar engine, from `master` at commit `9dafd346aff908b6d5b1db250eaf3a2588810c70` (`Engine/Guitar/Engines/YargFiveFretGuitarEngine.cs`, `Engine/Guitar/GuitarEngine.cs`, `GuitarEngineParameters.cs`, `GuitarStats.cs`, `Engine/BaseEngine.cs`, `BaseEngine.Generic.cs`, `SustainList.cs`, `SoloSection.cs`, `BaseStats.cs`, `EngineTimer.cs`, `HitWindowSettings.cs`, `YargMath.cs`, `Chart/Sync/TimeSignatureEvent.cs`, `Chart/Loaders/MoonSong/MoonSongLoader.Guitar.cs` (extended sustain flags), `Input/InputActions.cs` (GuitarAction), `Chart/Events/WaitCountdown.cs`, and the five-fret defaults from `Game/Presets/EnginePreset.Instruments.cs`), plus the star score thresholds from the [YARG](https://github.com/YARC-Official/YARG) game (also LGPL-3.0), `master` at commit `f5bfbe6996b4af35722d4204a93c6cc5c8f52a45` (`Assets/Script/Gameplay/Player/FiveFretGuitarPlayer.cs`, `BasePlayer.cs`). Copyright (c) YARC (YARG) contributors. |
 | `tests/engine.test.js` | LGPL-3.0. Tests for `engine.js`, describing YARG's five-fret rules. |
 
 `assets/engine.js` is a standalone, unminified script with no dependencies, shipped as its own file and
