@@ -38,12 +38,13 @@
 
     // Same format as core's gamepad-input claim key: `${id}#${n}`, n from 1 among identical ids.
     function controllerKey(info, nth) {
+        if (!info || typeof info.id !== 'string' || !info.id) return null;
         const n = Number.isInteger(nth) && nth > 0 ? nth : 1;
-        return `${info && info.id}#${n}`;
+        return `${info.id}#${n}`;
     }
 
     function isBinding(x) {
-        return !!x && typeof x === 'object' && !!x.map && typeof x.map === 'object';
+        return !!x && typeof x === 'object' && !!x.map && typeof x.map === 'object' && !Array.isArray(x.map);
     }
 
     function resolveBinding(info, stored) {
@@ -109,19 +110,48 @@
         return writeJSON(BINDINGS_KEY, all);
     }
 
+    // gamepadMode null = by controller kind (see effectiveGamepadMode); part 'auto' = pick from the song.
     function defaultSettings() {
-        return { difficulty: 'expert', lefty: false, gamepadMode: false, offsetMs: {}, part: 'guitar' };
+        return { difficulty: 'expert', lefty: false, gamepadMode: null, offsetMs: {}, part: 'auto' };
     }
-    function loadSettings() {
-        const stored = readJSON(SETTINGS_KEY) || {};
-        const s = Object.assign(defaultSettings(), stored);
-        if (!s.offsetMs || typeof s.offsetMs !== 'object' || Array.isArray(s.offsetMs)) s.offsetMs = {};
-        return s;
+    function isPlainObject(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
+    // Coerce every field to its expected type, falling back to the default.
+    function normaliseSettings(raw) {
+        const d = defaultSettings();
+        const r = isPlainObject(raw) ? raw : {};
+        const offsetMs = {};
+        if (isPlainObject(r.offsetMs)) {
+            for (const k of Object.keys(r.offsetMs)) {
+                if (typeof r.offsetMs[k] === 'number' && Number.isFinite(r.offsetMs[k])) offsetMs[k] = r.offsetMs[k];
+            }
+        }
+        return {
+            difficulty: typeof r.difficulty === 'string' && r.difficulty ? r.difficulty : d.difficulty,
+            lefty: typeof r.lefty === 'boolean' ? r.lefty : d.lefty,
+            gamepadMode: typeof r.gamepadMode === 'boolean' ? r.gamepadMode : d.gamepadMode,
+            offsetMs,
+            part: typeof r.part === 'string' && r.part ? r.part : d.part,
+        };
     }
+    function loadSettings() { return normaliseSettings(readJSON(SETTINGS_KEY)); }
+    // Shallow-merges the patch, except offsetMs which merges per controller key. Returns what was stored.
     function saveSettings(patch) {
-        const s = Object.assign(loadSettings(), patch || {});
+        const cur = loadSettings();
+        const p = isPlainObject(patch) ? patch : {};
+        const merged = Object.assign({}, cur, p);
+        merged.offsetMs = Object.assign({}, cur.offsetMs, isPlainObject(p.offsetMs) ? p.offsetMs : {});
+        const s = normaliseSettings(merged);
         writeJSON(SETTINGS_KEY, s);
         return s;
+    }
+    function setOffset(key, ms) {
+        return saveSettings({ offsetMs: { [key]: ms } });
+    }
+
+    // Explicit setting wins; null/unset = on for gamepads, off for guitars (and unknown kinds).
+    function effectiveGamepadMode(settings, binding) {
+        if (settings && typeof settings.gamepadMode === 'boolean') return settings.gamepadMode;
+        return !!binding && binding.kind === 'gamepad';
     }
 
     return {
@@ -136,5 +166,7 @@
         saveBinding,
         loadSettings,
         saveSettings,
+        setOffset,
+        effectiveGamepadMode,
     };
 });

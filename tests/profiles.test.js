@@ -112,7 +112,9 @@ test('bindings and settings round trip', () => {
         assert.deepEqual(Object.keys(P.loadBindings()).sort(), ['Pad#1', 'Pad#2']);
         const d = P.loadSettings();
         assert.equal(d.lefty, false);
-        assert.equal(d.gamepadMode, false);
+        assert.equal(d.gamepadMode, null);
+        assert.equal(d.part, 'auto');
+        assert.equal(d.difficulty, 'expert');
         assert.deepEqual(d.offsetMs, {});
         P.saveSettings({ lefty: true, offsetMs: { 'Pad#1': 12 } });
         P.saveSettings({ difficulty: 'hard' });
@@ -137,11 +139,64 @@ test('storage survives a throwing localStorage', () => {
         global.localStorage.setItem('five_fret.bindings.v1', '{not json');
         global.localStorage.setItem('five_fret.settings.v1', '[1,2]');
         assert.deepEqual(P.loadBindings(), {});
-        assert.equal(P.loadSettings().gamepadMode, false);
+        assert.equal(P.loadSettings().gamepadMode, null);
     });
     // No usable localStorage at all.
     withStorage(undefined, () => {
         assert.deepEqual(P.loadBindings(), {});
         assert.doesNotThrow(() => P.saveSettings({ lefty: true }));
     });
+});
+
+test('effectiveGamepadMode follows controller kind unless set', () => {
+    const pad = { kind: 'gamepad', map: {} };
+    const guitar = { kind: 'guitar', map: {} };
+    assert.equal(P.effectiveGamepadMode({ gamepadMode: null }, pad), true);
+    assert.equal(P.effectiveGamepadMode({ gamepadMode: null }, guitar), false);
+    assert.equal(P.effectiveGamepadMode({}, pad), true);
+    assert.equal(P.effectiveGamepadMode(undefined, guitar), false);
+    assert.equal(P.effectiveGamepadMode({ gamepadMode: null }, null), false);
+    assert.equal(P.effectiveGamepadMode({ gamepadMode: false }, pad), false);
+    assert.equal(P.effectiveGamepadMode({ gamepadMode: true }, guitar), true);
+});
+
+test('saveSettings keeps other controllers offsets', () => {
+    withStorage(memoryStorage(), () => {
+        P.saveSettings({ offsetMs: { 'A#1': 10 } });
+        P.saveSettings({ offsetMs: { 'B#1': -5 } });
+        assert.deepEqual(P.loadSettings().offsetMs, { 'A#1': 10, 'B#1': -5 });
+        P.setOffset('A#1', 20);
+        const s = P.setOffset('C#1', 3);
+        assert.deepEqual(s.offsetMs, { 'A#1': 20, 'B#1': -5, 'C#1': 3 });
+        P.saveSettings({ lefty: true });
+        assert.deepEqual(P.loadSettings().offsetMs, { 'A#1': 20, 'B#1': -5, 'C#1': 3 });
+    });
+});
+
+test('saveSettings re-normalises bad patches and returns what was stored', () => {
+    withStorage(memoryStorage(), () => {
+        P.saveSettings({ offsetMs: { 'A#1': 10 } });
+        let s = P.saveSettings({ offsetMs: null, lefty: 'yes', difficulty: 5, gamepadMode: 'x', part: null });
+        assert.deepEqual(s, { difficulty: 'expert', lefty: false, gamepadMode: null, offsetMs: { 'A#1': 10 }, part: 'auto' });
+        s = P.saveSettings({ offsetMs: [1, 2] });
+        assert.deepEqual(s.offsetMs, { 'A#1': 10 });
+        s = P.saveSettings({ offsetMs: { 'B#1': 'x', 'C#1': NaN, 'D#1': 7 } });
+        assert.deepEqual(s.offsetMs, { 'A#1': 10, 'D#1': 7 });
+        assert.deepEqual(P.loadSettings(), s);
+        assert.doesNotThrow(() => P.saveSettings(null));
+    });
+});
+
+test('controllerKey rejects a missing id; malformed bindings are not used', () => {
+    assert.equal(P.controllerKey(undefined, 1), null);
+    assert.equal(P.controllerKey({}, 1), null);
+    assert.equal(P.controllerKey({ id: '' }, 1), null);
+    const std = { id: 'X', mapping: 'standard' };
+    assert.equal(P.resolveBinding(std, { kind: 'guitar', map: [] }), P.STANDARD_GAMEPAD);
+    assert.equal(P.resolveBinding(std, 'str'), P.STANDARD_GAMEPAD);
+    assert.equal(P.resolveBinding({ id: 'X', mapping: '' }, { kind: 'guitar', map: [] }), null);
+    // Malformed entries inside a stored binding map are ignored by the mapper.
+    const m = P.createMapper({ kind: 'guitar', map: { green: null, red: 'x', yellow: { type: 'button', index: 1 } } });
+    assert.deepEqual(m.map(btn(1, 1)), [{ action: 'yellow', value: 1 }]);
+    assert.deepEqual(m.map(btn(0, 1)), []);
 });
