@@ -1,0 +1,33 @@
+{
+  "id": "five_fret",
+  "name": "5-Fret",
+  "version": "0.1.0",
+  "type": "visualization",
+  "private": false,
+  "screen": "screen.html",
+  "script": "screen.js",
+  "settings": {
+    "html": "settings.html"
+  },
+  "standards": [
+    "capability-pipelines.v1"
+  ],
+  "capabilities": {
+    "gamepad-input": {
+      "roles": [
+        "requester"
+      ],
+      "requests": [
+        "list-sources"
+      ],
+      "mode": "active",
+      "compatibility": "degrade-noop",
+      "ownership": "requester-only",
+      "safety": "sensitive",
+      "description": "Claims one game controller (gamepad or plastic guitar) through the core gamepad-input domain and reads its buttons and axes for 5-fret play. Absent domain: no controller, fail-soft.",
+      "version": 1
+    }
+  },
+  "category": "practice",
+  "description": "Clone Hero-style 5-fret guitar and bass play with a game controller or plastic guitar, judged and scored by a port of YARG's five-fret engine."
+}
