@@ -7,6 +7,12 @@
  * (assets/session.js over the engine port in assets/engine.js) fed by one claimed game controller
  * (window.feedBack.gamepadInput, named through assets/profiles.js).
  *
+ * Claim: the renderer holds a controller only while a 5-fret part is playing. It lets it go while
+ * paused, on a song with no 5-fret part, and before playback starts, so core's menus (A = play/pause,
+ * B = back) work then and a controller-only player can always leave; it claims again when playback
+ * resumes. Claim order: a controller with a saved binding (set up on the controls screen) first, then
+ * a standard-mapping pad, each in slot order.
+ *
  * Time: the engine runs on the highway's chart clock. Each draw records (bundle.currentTime,
  * performance.now() / 1000); a controller event's time is that chart time plus the wall time since the
  * frame (session.inputChartTime). The session applies the controller's input offset, to inputs and to
@@ -241,8 +247,13 @@
         let settings = { part: 'auto', difficulty: 'expert', lefty: false, gamepadMode: null, offsetMs: {} };
         let pending = {};                  // applySetting before profiles.js loaded
 
-        // Controller (handleInfo: its gamepad-input list() entry at claim time, for resolveBinding)
+        // Controller (handleInfo: its gamepad-input list() entry at claim time, for resolveBinding).
+        // binding stays set while the claim is parked (paused / no part), so the gamepad mode, and with
+        // it the session, does not change across a pause.
         let handle = null, handleInfo = null, binding = null, mapper = null, connected = false, offChange = null;
+        // wantClaim: a part is playing (see "Claim" above). readyKind: while no controller is held, the
+        // binding kind of the one tryClaim would take (null: none), for the header and status while paused.
+        let wantClaim = false, readyKind = null, claiming = false;
 
         // Session and clock
         let session = null;
@@ -254,7 +265,7 @@
         // so the steady state allocates nothing).
         const built = { partId: null, part: null, difficulty: null, gamepadMode: null, offsetMs: null,
             notes: null, notesLen: -1, levelNotes: null, levelLen: -1, beats: null, beatsLen: -1 };
-        let header = '', headerPart = null, headerSession = null, headerHandle = null, headerBinding = null;
+        let header = '', headerPart = null, headerSession = null, headerInput = null;
         let lastChartTime = NaN, lastFrameT = NaN, playing = true;
         const noteState = (i) => (session ? session.noteState(i) : null);
         const frame = {
@@ -307,33 +318,58 @@
             }
         }
 
-        // Claim the first free controller with a resolvable binding (not while the controls screen,
-        // which claims controllers itself, is open).
-        function tryClaim() {
-            if (handle || !P || _controlsOpen) return;
+        // Free connected controllers this renderer could play with, in claim order: those with a saved
+        // binding first, then standard pads (the implicit standard profile), each in slot order. So a
+        // controller set up on the controls screen wins over a pad in an earlier slot (a Steam Deck's
+        // built-in controls are always slot 0).
+        function claimable() {
             const gi = _gamepadInput();
-            if (!gi) return;
+            if (!gi) return [];
             let list;
-            try { list = gi.list(); } catch (_) { return; }
+            try { list = gi.list(); } catch (_) { return []; }
             const bindings = P.loadBindings();
+            const saved = [], standard = [];
             const nth = Object.create(null);
             for (const info of list) {
                 if (!info || !info.connected) continue;
                 nth[info.id] = (nth[info.id] || 0) + 1;
                 if (info.claimedBy) continue;   // another plugin, or another 5-fret panel
-                if (!P.resolveBinding(info, bindings[P.controllerKey(info, nth[info.id])])) continue;
-                const h = gi.claim(info.index, PLUGIN_ID);
-                if (!h) continue;
-                // The claim's controllerKey is the authority (it can differ after renumbering).
-                const b = P.resolveBinding(info, bindings[h.controllerKey]);
-                if (!b) { h.release(); continue; }
-                handle = h;
-                handleInfo = info;
-                binding = b;
-                mapper = P.createMapper(b);
-                connected = true;
-                h.addListener(onEvent);
-                return;
+                const stored = bindings[P.controllerKey(info, nth[info.id])];
+                const b = P.resolveBinding(info, stored);
+                if (b) (b === stored ? saved : standard).push({ info, kind: b.kind });
+            }
+            return saved.concat(standard);
+        }
+
+        // Claim the first claimable controller while a part plays (not while the controls screen, which
+        // claims controllers itself, is open); otherwise just note which one that would be (readyKind).
+        // Runs on claim-state changes and controller events, never per frame.
+        function tryClaim() {
+            if (handle || !P || claiming) return;
+            claiming = true;   // our own claim/release fires change events synchronously
+            try {
+                const cands = claimable();
+                readyKind = cands.length ? cands[0].kind : null;
+                if (!wantClaim || _controlsOpen) return;
+                const gi = _gamepadInput();
+                const bindings = P.loadBindings();
+                for (const c of cands) {
+                    const h = gi.claim(c.info.index, PLUGIN_ID);
+                    if (!h) continue;
+                    // The claim's controllerKey is the authority (it can differ after renumbering).
+                    const b = P.resolveBinding(c.info, bindings[h.controllerKey]);
+                    if (!b) { h.release(); continue; }
+                    handle = h;
+                    handleInfo = c.info;
+                    binding = b;
+                    mapper = P.createMapper(b);
+                    connected = true;
+                    h.addListener(onEvent);
+                    return;
+                }
+                readyKind = null;
+            } finally {
+                claiming = false;
             }
         }
 
@@ -350,16 +386,18 @@
                 } else if (ev.type === 'connect') {
                     connected = true;
                 }
-            } else if (ev.type === 'connect' || ev.type === 'release') {
-                tryClaim();
+            } else {
+                tryClaim();   // a controller came, went, or was claimed or released
             }
         }
 
-        // Let go of the claimed controller (frets it held are released in the session).
-        function dropHandle() {
+        // Let go of the claimed controller (frets it held are released in the session). park: only
+        // paused or between parts, so keep the binding (the gamepad mode, and the session, stay).
+        function dropHandle(park) {
             if (!handle) return;
             const h = handle;
-            handle = null; handleInfo = null; binding = null; mapper = null; connected = false;
+            handle = null; handleInfo = null; mapper = null; connected = false;
+            if (!park) binding = null;
             if (session) session.releaseAll(H.inputChartTime(lastChartTime, lastFrameT, _wallNow(), 0, playing));
             try { h.removeListener(onEvent); h.release(); } catch (_) { /* ignore */ }
         }
@@ -429,12 +467,13 @@
             });
         }
 
-        // "PART · INPUT · DIFFICULTY", rebuilt only when the part, session, controller or binding changes.
+        // "PART · INPUT · DIFFICULTY", rebuilt only when the part, session or input label changes. INPUT is
+        // the held controller's kind, or while parked (paused) the kind of the one a resume would claim.
         function headerFor(part) {
-            if (part === headerPart && session === headerSession && handle === headerHandle
-                && binding === headerBinding) return header;
-            headerPart = part; headerSession = session; headerHandle = handle; headerBinding = binding;
-            const input = !handle ? 'NO CONTROLLER' : (binding && binding.kind === 'gamepad' ? 'GAMEPAD' : 'GUITAR');
+            const kind = handle ? (binding && binding.kind) : (wantClaim ? null : readyKind);
+            const input = !kind ? 'NO CONTROLLER' : (kind === 'gamepad' ? 'GAMEPAD' : 'GUITAR');
+            if (part === headerPart && session === headerSession && input === headerInput) return header;
+            headerPart = part; headerSession = session; headerInput = input;
             header = [part.name || part.instrument || '5-Fret', input,
                 DIFFICULTY_LABELS[session ? session.difficulty : settings.difficulty] || ''].join(' · ');
             return header;
@@ -480,6 +519,7 @@
             token++;
             wireBus(false);
             releaseController();
+            binding = null; wantClaim = false; readyKind = null;
             _unmountPanel(instance);
             if (view) { try { view.destroy(); } catch (e) { console.warn('[5-Fret] view destroy failed:', e); } }
             view = null;
@@ -487,7 +527,7 @@
             hud = null;
             canvas = null;
             session = null;
-            headerPart = headerSession = headerHandle = headerBinding = null;
+            headerPart = headerSession = headerInput = null;
             lastChartTime = lastFrameT = NaN;
             lastW = lastH = 0;
         }
@@ -522,7 +562,7 @@
                     doResize();
                     const gi = _gamepadInput();
                     if (gi) offChange = gi.on('change', onChange);
-                    tryClaim();
+                    tryClaim();   // nothing plays yet: notes readyKind; the first playing draw claims
                     _mountPanel(instance);
                 });
                 this.readyPromise.catch((e) => {
@@ -552,6 +592,13 @@
                 } else {
                     session = null;
                 }
+                // Hold the controller only while a part plays (see "Claim" above).
+                const want = !!part && playing;
+                if (want !== wantClaim) {
+                    wantClaim = want;
+                    if (!want) dropHandle(true);
+                    tryClaim();
+                }
 
                 frame.now = t;
                 frame.notes = session ? session.notes : EMPTY;
@@ -565,8 +612,9 @@
                 frame.header = part ? headerFor(part) : '';
                 frame.sourceKind = part ? part.sourceKind : '';
                 statusArgs.hasParts = !!part;
-                statusArgs.hasController = !!handle;
-                statusArgs.connected = connected;
+                // Parked (paused) with a controller ready to claim on resume: no controller message.
+                statusArgs.hasController = !!handle || (!wantClaim && readyKind !== null);
+                statusArgs.connected = handle ? connected : true;
                 frame.message = H.statusMessage(statusArgs);
                 view.render(frame);
             },

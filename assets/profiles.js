@@ -188,7 +188,8 @@
     // opts.used). opts.rest = { [axisIndex]: restValue }; an axis with no rest given takes the first
     // value it reports as its rest. A hat switch (an axis resting outside [-1, 1], or one that jumps
     // from rest straight to a value short of full scale) is recorded by value instead:
-    // { type: 'axis', index, value, tolerance: 0.1 }, each direction its own control.
+    // { type: 'axis', index, value, tolerance: 0.1 }, each direction its own control. Never while
+    // recording the whammy, which is always a normal axis.
     // Pure: feed(ev) -> { done, next, binding, recorded }, where binding is { map } once done (else
     // null) and recorded is { action, spec } when ev recorded one.
     function createSetupRecorder(actions, opts) {
@@ -247,11 +248,13 @@
                     const r = rest[k];
                     const prev = k in last ? last[k] : r;
                     last[k] = v;
-                    if (!hats.has(k) && (Math.abs(r) > 1 + AT_REST
+                    // The whammy is never a hat: a quick pull past 0.5 in one poll is still its direction.
+                    const whammy = i < list.length && list[i] === 'whammy';
+                    if (!whammy && !hats.has(k) && (Math.abs(r) > 1 + AT_REST
                         || (Math.abs(prev - r) < AT_REST && Math.abs(v - prev) > SETUP_AXIS_MOVE
                             && Math.abs(Math.abs(v) - 1) > FULL_SCALE))) hats.add(k);
                     if (i >= list.length) return result(null);
-                    if (hats.has(k)) {
+                    if (!whammy && hats.has(k)) {
                         if (Math.abs(v - r) < AT_REST) return result(null);
                         return take({ type: 'axis', index: k, value: Math.round(v * 1000) / 1000, tolerance: HAT_TOLERANCE });
                     }

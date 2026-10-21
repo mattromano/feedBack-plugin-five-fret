@@ -233,11 +233,11 @@ async function started(env) {
 
 // ── Wiring ───────────────────────────────────────────────────────────────────────
 
-test('init claims the gamepad, mounts the panel, and draws the picked part', async (t) => {
+test('init mounts the panel; the first playing draw claims the gamepad and draws the picked part', async (t) => {
     const env = setup(t);
     const ff = parts();
     const r = await started(env);
-    assert.equal(env.gi.claims, 1);
+    assert.equal(env.gi.claims, 0);   // nothing plays yet
     assert.equal(env.slot.children.length, 1);
     // Only classes core's tailwind.min.css has: bg-fb-card, text-fb-textDim, ... never a bare fb-* token.
     const panel = env.slot.children[0];
@@ -249,6 +249,7 @@ test('init claims the gamepad, mounts the panel, and draws the picked part', asy
     })(panel);
     assert.deepEqual(bare, []);
     r.draw(bundleAt(0, ff));
+    assert.equal(env.gi.claims, 1);
     assert.equal(env.last().notes, 2);
     assert.equal(env.last().message, null);
     assert.equal(env.last().header, 'Lead · GAMEPAD · Expert');
@@ -315,7 +316,8 @@ test('part and difficulty changes rebuild the session; held frets carry over', a
 test('Start pauses through window.togglePlay', async (t) => {
     const env = setup(t);
     const ff = parts();
-    await started(env);
+    const r = await started(env);
+    r.draw(bundleAt(0, ff));
     env.gi.button(9, true);
     env.gi.button(9, false);
     assert.equal(env.win.togglePlays, 1);
@@ -355,9 +357,9 @@ test('destroy releases the claim, removes the panel and view; init again works',
     assert.equal(env.gi.changeFns.length, 0);
     r.init(fakeElement('canvas'), {});
     await r.readyPromise;
-    assert.equal(env.gi.claims, 2);
     assert.equal(env.slot.children.length, 1);
     r.draw(bundleAt(0, ff));
+    assert.equal(env.gi.claims, 2);
     assert.equal(env.last().message, null);
 });
 
@@ -409,6 +411,92 @@ test('a binding saved mid-session is picked up by the renderer (five_fret:bindin
     assert.equal(env2.bus.count('five_fret:bindings-changed'), 0);
 });
 
+// ── Claim rules ──────────────────────────────────────────────────────────────────
+
+test('a set-up controller is claimed before a standard pad in an earlier slot', async (t) => {
+    const env = setup(t, { pads: [{ id: 'Xbox', mapping: 'standard' }, { id: 'Guitar', mapping: '' }] });
+    P.saveBinding('Guitar#1', { kind: 'guitar', map: GUITAR_MAP });
+    const ff = parts();
+    const r = await started(env);
+    r.draw(bundleAt(0, ff));
+    assert.equal(env.gi.owner(1), 'five_fret');
+    assert.equal(env.gi.owner(0), null);
+    assert.equal(env.gi.claims, 1);
+    assert.equal(env.last().header, 'Lead · GUITAR · Expert');
+    // Without a saved binding, the standard pad is still the fallback.
+    const env2 = setup(t, { pads: [{ id: 'Guitar', mapping: '' }, { id: 'Xbox', mapping: 'standard' }] });
+    const r2 = await started(env2);
+    r2.draw(bundleAt(0, ff));
+    assert.equal(env2.gi.owner(1), 'five_fret');
+    assert.equal(env2.last().header, 'Lead · GAMEPAD · Expert');
+});
+
+test('the claim is held only while a part plays: none on a no-part song, released while paused', async (t) => {
+    const env = setup(t);
+    const ff = parts();
+    const r = await started(env);
+    // A song with no 5-fret part: the pad stays with core's menus.
+    r.draw(bundleAt(0, {}));
+    r.draw(bundleAt(FRAME, {}));
+    assert.equal(env.gi.claims, 0);
+    assert.equal(env.last().message, 'No 5-fret chart for this song');
+    // Before playback starts (paused): no claim, and no controller message for a ready pad.
+    r.draw(bundleAt(0, ff, { isPlaying: false }));
+    assert.equal(env.gi.claims, 0);
+    assert.equal(env.last().message, null);
+    assert.equal(env.last().header, 'Lead · GAMEPAD · Expert');
+    // Playing: claimed.
+    r.draw(bundleAt(FRAME, ff));
+    assert.equal(env.gi.owner(0), 'five_fret');
+    env.gi.button(6, true);   // green held
+    r.draw(bundleAt(2 * FRAME, ff));
+    assert.deepEqual(env.last().pressed, [true, false, false, false, false]);
+    // Paused: released, the held fret let go, nothing said about the controller.
+    r.draw(bundleAt(2 * FRAME, ff, { isPlaying: false }));
+    assert.equal(env.gi.owner(0), null);
+    assert.equal(env.gi.releases, 1);
+    assert.deepEqual(env.last().pressed, [false, false, false, false, false]);
+    assert.equal(env.last().message, null);
+    assert.equal(env.last().header, 'Lead · GAMEPAD · Expert');
+    env.gi.button(6, true);   // core's menus have it now: the renderer ignores it
+    r.draw(bundleAt(2 * FRAME, ff, { isPlaying: false }));
+    assert.deepEqual(env.last().pressed, [false, false, false, false, false]);
+    // Resumed: claimed again, and plays.
+    r.draw(bundleAt(3 * FRAME, ff));
+    assert.equal(env.gi.owner(0), 'five_fret');
+    assert.equal(env.gi.claims, 2);
+    env.gi.button(4, true);   // red
+    r.draw(bundleAt(4 * FRAME, ff));
+    assert.deepEqual(env.last().pressed, [false, true, false, false, false]);
+    // The part goes away mid-song (a song change): released again.
+    r.draw(bundleAt(5 * FRAME, {}));
+    assert.equal(env.gi.owner(0), null);
+    assert.equal(env.gi.releases, 2);
+    // Paused with no controller at all: say so.
+    const env2 = setup(t, { pad: false });
+    const r2 = await started(env2);
+    r2.draw(bundleAt(0, ff, { isPlaying: false }));
+    assert.equal(env2.last().message, 'Connect a controller and press any button');
+    assert.equal(env2.last().header, 'Lead · NO CONTROLLER · Expert');
+});
+
+test('pausing does not rebuild the session (score and gamepad mode kept)', async (t) => {
+    const env = setup(t);
+    const ff = parts();
+    const r = await started(env);
+    for (let x = 0.8; x < 1; x += FRAME) r.draw(bundleAt(x, ff));
+    r.draw(bundleAt(1, ff));
+    env.gi.button(6, true);
+    env.gi.button(13, true);
+    r.draw(bundleAt(1 + FRAME, ff));
+    assert.equal(env.last().hits, 1);
+    r.draw(bundleAt(1 + FRAME, ff, { isPlaying: false }));
+    assert.equal(env.last().hits, 1);
+    assert.equal(r.getSetting('gamepadMode'), true);
+    r.draw(bundleAt(1 + 2 * FRAME, ff));
+    assert.equal(env.last().hits, 1);
+});
+
 // ── Controls screen ───────────────────────────────────────────────────────────────
 
 function openControls(env) { env.bus.emit('screen:changed', { id: 'plugin-five_fret', from: 'player' }); return tick(); }
@@ -418,6 +506,7 @@ test('controls screen claims while open; the renderer yields and takes the contr
     const env = setup(t);
     const ff = parts();
     const r = await started(env);
+    r.draw(bundleAt(0, ff));
     assert.equal(env.gi.owner(0), 'five_fret');
     await openControls(env);
     assert.equal(env.gi.owner(0), 'five_fret.controls');
@@ -472,6 +561,7 @@ test('set up as guitar walks the actions, saves the binding, and the renderer pl
     const env = setup(t, { pads: [{ id: 'Guitar', mapping: '' }] });
     const ff = parts();
     const r = await started(env);
+    r.draw(bundleAt(0, ff));
     assert.equal(env.gi.claims, 0);
     await openControls(env);
     assert.match(find(env.list, 'status').textContent, /Not set up/);

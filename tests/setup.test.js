@@ -156,6 +156,17 @@ test('hat switch: two directions on one axis recorded as strum_down and strum_up
     assert.equal(r.done, true);
 });
 
+test('whammy is never a hat: one quick pull past 0.5 records a normal axis that reads 1 at full pull', () => {
+    const rec = P.createSetupRecorder(['whammy']);
+    rec.feed(axis(3, -1));                // its rest
+    const r = rec.feed(axis(3, -0.3));    // one poll, pulled 0.7 from rest, short of full scale
+    assert.equal(r.done, true);
+    assert.deepEqual(r.binding.map, { whammy: { type: 'axis', index: 3, sign: 1 } });
+    const m = P.createMapper({ kind: 'guitar', map: r.binding.map });
+    assert.deepEqual(m.map(axis(3, 1)), [{ action: 'whammy', value: 1 }]);
+    assert.deepEqual(m.map(axis(3, -1)), [{ action: 'whammy', value: 0 }]);
+});
+
 test('hat switch: the mapper presses while the axis is within tolerance of the value', () => {
     const m = P.createMapper({ kind: 'guitar', map: {
         strum_down: { type: 'axis', index: 9, value: 0.143, tolerance: 0.1 },

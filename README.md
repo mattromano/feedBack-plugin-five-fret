@@ -91,9 +91,12 @@ The renderer (`window.feedBackViz_five_fret`, WebGL2) plays one part of the song
 - **Part:** the `part` setting, `auto` | `guitar` | `rhythm` | `bass`. `auto` takes the bass part
   when the current arrangement's name contains "bass", else the guitar part, else the first part. A
   part the song lacks falls back to `auto`.
-- **Controller:** it claims the first free controller with a binding (a standard gamepad works out of
-  the box) through core's `gamepad-input` domain. Start pauses. If it unplugs, the song keeps going
-  without input and the highway says "Controller disconnected" until it is back.
+- **Controller:** it claims a free controller through core's `gamepad-input` domain: one set up on
+  the controls screen first, else a standard gamepad (which works out of the box), each in slot
+  order. It holds the controller only while a 5-fret part is playing: paused, before playback, or on
+  a song with no 5-fret part it lets go, so core's menus work (A plays/pauses, B goes back) and a
+  controller-only player can always leave. Start pauses. If it unplugs, the song keeps going without
+  input and the highway says "Controller disconnected" until it is back.
 - **Timing:** inputs are judged on the highway's chart clock, minus the controller's input offset.
   Seeking or looping (a jump of more than 0.25 s) starts the scoring over from the new position
   without counting the skipped notes as misses.
