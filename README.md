@@ -6,8 +6,8 @@ song's 5-fret part with a game controller or a plastic guitar, judged and scored
 
 Status: in development. This version ships the scoring engine (`assets/engine.js`), controller
 profiles (`assets/profiles.js`), the tilted 3D highway view (`assets/highway3d.js`), the player
-renderer (`screen.js`, with `assets/session.js`) and the controls screen (`screen.html`,
-`assets/controls.js`).
+renderer (`screen.js`, with `assets/session.js`), the controls screen (`screen.html`,
+`assets/controls.js`) and a band API for Build-a-Band (`window.feedBackFiveFret`).
 
 ## Scoring engine
 
@@ -70,7 +70,7 @@ first.
 const view = FiveFretHighway3D.createView(THREE, canvas, { hudCanvas, context });
 view.resize(cssWidth, cssHeight, devicePixelRatio);
 view.render({ now, notes, beats, starPower, solos, pressed, whammy, noteState, state,
-              lefty, header, sourceKind, lookahead, message });
+              lefty, header, sourceKind, lookahead, message, scoreHidden });
 view.destroy();
 ```
 
@@ -105,7 +105,10 @@ The renderer (`window.feedBackViz_five_fret`, WebGL2) plays one part of the song
   from the saved ones; the normal player's panel saves its choices to `five_fret.settings.v1`.
 
 `assets/session.js` (`window.FiveFretSession`) holds the scoring session and the renderer's pure
-helpers (`pickPart`, `inputChartTime`, `statusMessage`, `isJump`).
+helpers (`pickPart`, `inputChartTime`, `statusMessage`, `isJump`). `pickPart(parts, arrangementName,
+setting, opts)` takes `opts = { exact?, showAuto? }`: `exact` gives null for an instrument the song
+lacks instead of falling back; `showAuto` is reserved for the auto-chart setting and changes nothing
+yet.
 
 ## Controls screen
 
@@ -138,6 +141,45 @@ announced on `window.feedBack` (`five_fret:bindings-changed`, `five_fret:offset-
 running renderer re-reads its binding or offset when the event names its controller, so a
 plastic guitar set up mid-song is claimed straight away. The pure helpers are in `assets/profiles.js`: `SETUP_ACTIONS`,
 `createSetupRecorder(actions, { used?, rest? })` and `calibrationOffset(clickTimes, strumTimes)`.
+
+## Band API
+
+`window.feedBackFiveFret` (`version: 1`) lets Build-a-Band run one 5-fret lane per controller, the
+way it uses `window.feedBackDrums`. Lanes are keyed by their highway canvas, so a call made before a
+renderer inits on the canvas (or across a re-init) still applies.
+
+```js
+const ff = window.feedBackFiveFret;
+ff.setLane(canvas, { controllerKey: 'Xbox Wireless Controller#2', part: 'bass', difficulty: 'expert', lefty: false });
+ff.setDifficulty('hard', canvas);
+ff.setScoreHudHidden(canvas, true);      // ff.isScoreHudHidden(canvas)
+ff.getInstanceState(canvas);             // null, or getState() + { starThresholds, partId, instrument,
+                                         //   sourceKind, controllerKey, connected }
+ff.clearLane(canvas);
+await ff.listControllers();              // [{ index, controllerKey, id, mapping, name, kind, connected, claimedBy }]
+await ff.createMapper(controllerKey);    // { map(ev) -> [{ action, value }] } | null
+ff.showAutoCharts();                     // the saved "show auto charts" flag, default false
+ff.openControls({ returnTo: 'plugin-build_a_band' });
+```
+
+- **`setLane`** returns false (changing nothing) on bad arguments; calling it again updates the lane.
+  `part` is `guitar` | `rhythm` | `bass` and is played exactly: a song without it shows "No 5-fret chart
+  for this song" (`pickPart(…, { exact: true })`). `difficulty` is `easy` | `medium` | `hard` |
+  `expert`; `lefty` a boolean.
+- A pinned lane claims only its `controllerKey`, and holds it from `setLane` (as soon as it is
+  connected) until `clearLane` or destroy, while loading, counting in or paused too. It never mounts
+  the 5-Fret panel or saves `five_fret.settings.v1`, and its gamepad mode follows the controller's
+  kind (on for gamepads, off for guitars), not the saved setting. It still lets go while the controls
+  screen is open. `clearLane` returns the renderer to its own settings and the normal claim rules.
+- **`setScoreHudHidden`** hides the lane's score, multiplier, streak, star power bar and stars; the
+  header tag, AUTO CHART and status messages stay.
+- **`getInstanceState`**'s `starThresholds` are the full chart's (the same after a seek).
+- **`listControllers`** and **`createMapper`** return Promises and load `profiles.js` on demand.
+  `kind` is the resolved binding's (`gamepad` | `guitar`), or null when the controller needs setup.
+  `name` is the controller id up to its first ` (`, at most 24 characters, plus ` 2` for a second
+  identical controller.
+- **`openControls`** shows the controls screen; its Back button goes to `returnTo` (default `home`)
+  for that visit.
 
 ## Tests
 

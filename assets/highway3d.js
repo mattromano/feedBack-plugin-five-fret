@@ -18,11 +18,12 @@
  * (instanced gems, tails, beat lines); render() makes no DOM queries.
  *
  * frame = { now, notes, beats, starPower, solos, pressed: bool[5], whammy, noteState(i), state,
- *           lefty, header, sourceKind, lookahead?, message? }
+ *           lefty, header, sourceKind, lookahead?, message?, scoreHidden? }
  *   now: chart time in seconds; notes: wire notes { t, f, l?, h?, tap? } sorted by t;
  *   noteState(i): engine noteState ('held' while the sustain is active, 'hit', 'miss' or null);
  *   state: engine getState(); header: "PART · INPUT · DIFFICULTY";
- *   sourceKind 'auto' shows AUTO CHART; message (optional): a status line drawn over the highway.
+ *   sourceKind 'auto' shows AUTO CHART; message (optional): a status line drawn over the highway;
+ *   scoreHidden (a band lane): no score, multiplier, streak, star power bar or stars on the HUD.
  */
 (function (root, factory) {
     'use strict';
@@ -298,7 +299,7 @@
         let destroyed = false;
         let hudDirty = true;
         const hudLast = { score: NaN, combo: NaN, mult: NaN, sp: NaN, spActive: false, stars: NaN,
-            solo: false, soloHit: NaN, soloTotal: NaN, header: null, auto: false, message: null };
+            solo: false, soloHit: NaN, soloTotal: NaN, header: null, auto: false, message: null, scoreHidden: false };
 
         function placeTail(note, mask, code, sp, now, speed, lefty, whammy, cnt) {
             const t = +note.t, len = +note.l;
@@ -471,13 +472,16 @@
             const header = typeof frame.header === 'string' ? frame.header : '';
             const auto = frame.sourceKind === 'auto';
             const message = typeof frame.message === 'string' && frame.message ? frame.message : null;
+            const scoreHidden = frame.scoreHidden === true;
             const h = hudLast;
             if (!hudDirty && h.score === score && h.combo === combo && h.mult === mult && h.sp === sp
                 && h.spActive === spActive && h.stars === st && h.solo === solo && h.soloHit === soloHit
-                && h.soloTotal === soloTotal && h.header === header && h.auto === auto && h.message === message) return;
+                && h.soloTotal === soloTotal && h.header === header && h.auto === auto && h.message === message
+                && h.scoreHidden === scoreHidden) return;
             hudDirty = false;
             h.score = score; h.combo = combo; h.mult = mult; h.sp = sp; h.spActive = spActive; h.stars = st;
             h.solo = solo; h.soloHit = soloHit; h.soloTotal = soloTotal; h.header = header; h.auto = auto; h.message = message;
+            h.scoreHidden = scoreHidden;
 
             const ctx = hctx;
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -514,37 +518,39 @@
                 ctx.fillText('AUTO CHART', pad + 5, y + 10);
             }
 
-            // Star power bar, score, multiplier x streak, stars (top right).
+            // Star power bar, score, multiplier x streak, stars (top right); none in a band lane.
             const right = cssW - pad;
             const barW = 90, barH = 7;
-            ctx.fillStyle = CSS.meterBack;
-            ctx.fillRect(right - barW, pad, barW, barH);
-            if (sp > 0) {
-                ctx.fillStyle = CSS.overdrive;
-                ctx.fillRect(right - barW, pad, barW * sp, barH);
-            }
-            if (state) {
-                ctx.textAlign = 'right';
-                ctx.fillStyle = '#ffffff';
-                ctx.font = F_SCORE;
-                ctx.fillText(ht.scoreStr, right, pad + barH + 24);
-                ctx.font = F_SMALL;
-                ctx.fillStyle = spActive ? CSS.overdrive : text;
-                ctx.fillText(ht.streakStr, right, pad + barH + 41);
-                L.starFill(st, stars);
-                const r = 6, gap = 15;
-                for (let i = 0; i < 5; i++) {
-                    const cx = right - r - (4 - i) * gap, cy = pad + barH + 56;
-                    drawStar(ctx, cx, cy, r);
-                    ctx.fillStyle = CSS.meterBack;
-                    ctx.fill();
-                    const fill = i < stars.full ? 1 : (i === stars.full ? stars.frac : 0);
-                    if (fill > 0) {
-                        ctx.save();
-                        ctx.clip();
-                        ctx.fillStyle = stars.gold ? CSS.gold : '#ffffff';
-                        ctx.fillRect(cx - r, cy - r, 2 * r * fill, 2 * r);
-                        ctx.restore();
+            if (!scoreHidden) {
+                ctx.fillStyle = CSS.meterBack;
+                ctx.fillRect(right - barW, pad, barW, barH);
+                if (sp > 0) {
+                    ctx.fillStyle = CSS.overdrive;
+                    ctx.fillRect(right - barW, pad, barW * sp, barH);
+                }
+                if (state) {
+                    ctx.textAlign = 'right';
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = F_SCORE;
+                    ctx.fillText(ht.scoreStr, right, pad + barH + 24);
+                    ctx.font = F_SMALL;
+                    ctx.fillStyle = spActive ? CSS.overdrive : text;
+                    ctx.fillText(ht.streakStr, right, pad + barH + 41);
+                    L.starFill(st, stars);
+                    const r = 6, gap = 15;
+                    for (let i = 0; i < 5; i++) {
+                        const cx = right - r - (4 - i) * gap, cy = pad + barH + 56;
+                        drawStar(ctx, cx, cy, r);
+                        ctx.fillStyle = CSS.meterBack;
+                        ctx.fill();
+                        const fill = i < stars.full ? 1 : (i === stars.full ? stars.frac : 0);
+                        if (fill > 0) {
+                            ctx.save();
+                            ctx.clip();
+                            ctx.fillStyle = stars.gold ? CSS.gold : '#ffffff';
+                            ctx.fillRect(cx - r, cy - r, 2 * r * fill, 2 * r);
+                            ctx.restore();
+                        }
                     }
                 }
             }

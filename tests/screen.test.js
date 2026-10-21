@@ -172,12 +172,12 @@ function setup(t, opts) {
     const win = {
         FiveFretEngine: E, FiveFretProfiles: P, FiveFretSession: S, FiveFretLayout: {}, FiveFretControls: C,
         FiveFretHighway3D: {
-            createView() {
+            createView(THREE, cv) {
                 const v = {
                     destroyed: false,
                     render(f) {
                         renders.push({ message: f.message, header: f.header, notes: f.notes.length, pressed: f.pressed.slice(),
-                            lefty: f.lefty, hits: f.state ? f.state.notesHit : null, now: f.now });
+                            lefty: f.lefty, hits: f.state ? f.state.notesHit : null, now: f.now, scoreHidden: f.scoreHidden, canvas: cv });
                     },
                     resize() {},
                     destroy() { v.destroyed = true; },
@@ -495,6 +495,306 @@ test('pausing does not rebuild the session (score and gamepad mode kept)', async
     assert.equal(r.getSetting('gamepadMode'), true);
     r.draw(bundleAt(1 + 2 * FRAME, ff));
     assert.equal(env.last().hits, 1);
+});
+
+// ── Band API (window.feedBackFiveFret) ───────────────────────────────────────────────
+
+async function startedOn(env, canvas) {
+    const r = env.win.feedBackViz_five_fret();
+    r.init(canvas, {});
+    await r.readyPromise;
+    return r;
+}
+const lane = (extra) => Object.assign({ controllerKey: 'Xbox#1', part: 'guitar', difficulty: 'easy', lefty: true }, extra);
+
+test('setLane before init pins the instance that inits on the canvas', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    assert.equal(api.version, 1);
+    const cv = fakeElement('canvas');
+    assert.equal(api.setLane(cv, lane()), true);
+    const r = await startedOn(env, cv);
+    assert.equal(env.gi.owner(0), 'five_fret');   // claimed from setLane, before any draw
+    r.draw(bundleAt(0, parts()));
+    assert.equal(env.last().header, 'Lead · GAMEPAD · Easy');
+    assert.equal(env.last().notes, 1);
+    assert.equal(env.last().lefty, true);
+    // Bad arguments change nothing.
+    for (const bad of [lane({ part: 'auto' }), lane({ part: 'drums' }), lane({ difficulty: 'insane' }),
+        lane({ controllerKey: '' }), lane({ controllerKey: 7 }), lane({ lefty: 'yes' })]) {
+        assert.equal(api.setLane(cv, bad), false);
+    }
+    assert.equal(api.setLane(null, lane()), false);
+    assert.equal(api.setLane(cv, null), false);
+    r.draw(bundleAt(FRAME, parts()));
+    assert.equal(env.last().header, 'Lead · GAMEPAD · Easy');
+    // Calling again updates.
+    assert.equal(api.setLane(cv, lane({ part: 'bass', difficulty: 'expert', lefty: false })), true);   // bass: no levels
+    r.draw(bundleAt(2 * FRAME, parts()));
+    assert.equal(env.last().header, 'Bass · GAMEPAD · Expert');
+    assert.equal(env.last().lefty, false);
+    assert.equal(env.gi.claims, 1);   // same controller, same claim
+    // setDifficulty updates the pinned lane (drums parity); an unpinned canvas is a no-op.
+    api.setLane(cv, lane({ difficulty: 'expert' }));
+    assert.equal(api.setDifficulty('easy', cv), true);
+    r.draw(bundleAt(3 * FRAME, parts()));
+    assert.equal(env.last().header, 'Lead · GAMEPAD · Easy');
+    assert.equal(env.last().notes, 1);
+    assert.equal(api.setDifficulty('insane', cv), false);
+    assert.equal(api.setDifficulty('easy', fakeElement('canvas')), false);
+});
+
+test('a pinned lane claims only its controllerKey, even with a standard pad in an earlier slot', async (t) => {
+    const env = setup(t, { pads: [{ id: 'Xbox', mapping: 'standard' }, { id: 'Xbox', mapping: 'standard' }] });
+    const api = env.win.feedBackFiveFret;
+    const cv = fakeElement('canvas');
+    api.setLane(cv, lane({ controllerKey: 'Xbox#2' }));
+    const r = await startedOn(env, cv);
+    r.draw(bundleAt(0, parts()));
+    assert.equal(env.gi.owner(0), null);
+    assert.equal(env.gi.owner(1), 'five_fret');
+    assert.equal(env.gi.claims, 1);
+    // Its inputs come from that pad only.
+    env.gi.button(6, true, 0);
+    r.draw(bundleAt(FRAME, parts()));
+    assert.deepEqual(env.last().pressed, [false, false, false, false, false]);
+    env.gi.button(6, true, 1);
+    r.draw(bundleAt(2 * FRAME, parts()));
+    assert.deepEqual(env.last().pressed, [true, false, false, false, false]);
+    // A key that is not connected: nothing is claimed.
+    const env2 = setup(t);
+    const cv2 = fakeElement('canvas');
+    env2.win.feedBackFiveFret.setLane(cv2, lane({ controllerKey: 'Guitar#1' }));
+    const r2 = await startedOn(env2, cv2);
+    r2.draw(bundleAt(0, parts()));
+    assert.equal(env2.gi.claims, 0);
+    assert.equal(env2.last().message, 'Connect a controller and press any button');
+});
+
+test('a pinned lane keeps its claim while paused and before the part loads', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    const cv = fakeElement('canvas');
+    api.setLane(cv, lane());
+    const r = await startedOn(env, cv);
+    assert.equal(env.gi.owner(0), 'five_fret');
+    r.draw(bundleAt(0, {}));                              // no part yet
+    assert.equal(env.gi.owner(0), 'five_fret');
+    r.draw(bundleAt(0, parts(), { isPlaying: false }));   // counting in / paused
+    assert.equal(env.gi.owner(0), 'five_fret');
+    r.draw(bundleAt(FRAME, parts()));
+    r.draw(bundleAt(FRAME, parts(), { isPlaying: false }));
+    assert.equal(env.gi.owner(0), 'five_fret');
+    assert.equal(env.gi.releases, 0);
+    assert.equal(env.gi.claims, 1);
+    // A pad plugged in later is claimed as soon as it connects.
+    const env2 = setup(t, { pad: false });
+    const cv2 = fakeElement('canvas');
+    env2.win.feedBackFiveFret.setLane(cv2, lane());
+    const r2 = await startedOn(env2, cv2);
+    r2.draw(bundleAt(0, parts(), { isPlaying: false }));
+    env2.gi.pads.push({ id: 'Xbox', mapping: 'standard' });
+    env2.gi.change('connect', 0);
+    assert.equal(env2.gi.owner(0), 'five_fret');
+    // destroy releases it.
+    r2.destroy();
+    assert.equal(env2.gi.owner(0), null);
+});
+
+test('a pinned lane plays its part exactly: Rhythm missing shows the no-chart message', async (t) => {
+    const env = setup(t);
+    const cv = fakeElement('canvas');
+    env.win.feedBackFiveFret.setLane(cv, lane({ part: 'rhythm' }));
+    const r = await startedOn(env, cv);
+    r.draw(bundleAt(0, parts()));   // Lead and Bass only
+    assert.equal(env.last().message, 'No 5-fret chart for this song');
+    assert.equal(env.last().notes, 0);
+    assert.equal(env.last().header, '');
+});
+
+test('a pinned lane uses the pinned difficulty and lefty and never mounts the panel or saves settings', async (t) => {
+    const env = setup(t);
+    P.saveSettings({ difficulty: 'hard', lefty: false, gamepadMode: false });
+    const saved = env.storage.getItem(P.SETTINGS_KEY);
+    const api = env.win.feedBackFiveFret;
+    const cv = fakeElement('canvas');
+    api.setLane(cv, lane({ difficulty: 'easy', lefty: true }));
+    const r = await startedOn(env, cv);
+    assert.equal(env.slot.children.length, 0);
+    r.draw(bundleAt(0, parts()));
+    assert.equal(env.last().header, 'Lead · GAMEPAD · Easy');
+    assert.equal(env.last().lefty, true);
+    assert.equal(r.getSetting('difficulty'), 'easy');
+    // The saved global gamepadMode (off) is ignored: the controller's kind decides (a pad: on).
+    assert.equal(r.getSetting('gamepadMode'), true);
+    r.applySetting('difficulty', 'expert');
+    r.applySetting('lefty', false);
+    assert.equal(env.storage.getItem(P.SETTINGS_KEY), saved);
+    assert.equal(env.slot.children.length, 0);
+    // Pinning an instance that owns the panel takes the panel away.
+    const cv2 = fakeElement('canvas');
+    const r2 = await startedOn(env, cv2);
+    assert.equal(env.slot.children.length, 1);
+    api.setLane(cv2, lane({ controllerKey: 'Xbox#1' }));
+    assert.equal(env.slot.children.length, 0);
+    r2.applySetting('difficulty', 'easy');
+    assert.equal(env.storage.getItem(P.SETTINGS_KEY), saved);
+    // A guitar-bound controller plays without gamepad mode even when the saved setting is on.
+    P.saveSettings({ gamepadMode: true });
+    const env3 = setup(t, { pads: [{ id: 'Guitar', mapping: '' }], storage: env.storage });
+    P.saveBinding('Guitar#1', { kind: 'guitar', map: GUITAR_MAP });
+    const cv3 = fakeElement('canvas');
+    env3.win.feedBackFiveFret.setLane(cv3, lane({ controllerKey: 'Guitar#1' }));
+    const r3 = await startedOn(env3, cv3);
+    assert.equal(r3.getSetting('gamepadMode'), false);
+});
+
+test('clearLane returns the instance to its own settings', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    const cv = fakeElement('canvas');
+    api.setLane(cv, lane({ difficulty: 'easy', lefty: true }));
+    const r = await startedOn(env, cv);
+    r.draw(bundleAt(0, parts(), { isPlaying: false }));
+    assert.equal(env.gi.owner(0), 'five_fret');
+    api.clearLane(cv);
+    // Back to the unpinned rules: paused, so the claim is let go; its own settings; the panel.
+    assert.equal(env.gi.owner(0), null);
+    assert.equal(env.slot.children.length, 1);
+    r.draw(bundleAt(0, parts(), { isPlaying: false }));
+    assert.equal(env.last().header, 'Lead · GAMEPAD · Expert');
+    assert.equal(env.last().lefty, false);
+    r.draw(bundleAt(FRAME, parts()));
+    assert.equal(env.gi.owner(0), 'five_fret');
+    assert.doesNotThrow(() => api.clearLane(null));
+    // A re-init on a cleared canvas is not pinned.
+    r.init(cv, {});
+    await r.readyPromise;
+    assert.equal(env.slot.children.length, 1);
+});
+
+test('setScoreHudHidden sets frame.scoreHidden for that canvas only', async (t) => {
+    const env = setup(t, { pads: [{ id: 'Xbox', mapping: 'standard' }, { id: 'Xbox', mapping: 'standard' }] });
+    const api = env.win.feedBackFiveFret;
+    const a = fakeElement('canvas'), b = fakeElement('canvas');
+    api.setLane(a, lane());
+    api.setLane(b, lane({ controllerKey: 'Xbox#2' }));
+    const ra = await startedOn(env, a);
+    const rb = await startedOn(env, b);
+    assert.equal(api.setScoreHudHidden(a, true), true);
+    assert.equal(api.setScoreHudHidden(a, 'yes'), false);
+    assert.equal(api.setScoreHudHidden(null, true), false);
+    assert.equal(api.isScoreHudHidden(a), true);
+    assert.equal(api.isScoreHudHidden(b), false);
+    ra.draw(bundleAt(0, parts()));
+    assert.equal(env.last().scoreHidden, true);
+    rb.draw(bundleAt(0, parts()));
+    assert.equal(env.last().scoreHidden, false);
+    api.setScoreHudHidden(a, false);
+    ra.draw(bundleAt(FRAME, parts()));
+    assert.equal(env.last().scoreHidden, false);
+    assert.equal(env.last().canvas, a);
+});
+
+test('getInstanceState returns engine state plus full-chart starThresholds, unchanged by a seek', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    const cv = fakeElement('canvas');
+    assert.equal(api.getInstanceState(cv), null);
+    api.setLane(cv, lane({ difficulty: 'expert' }));
+    const r = await startedOn(env, cv);
+    assert.equal(api.getInstanceState(cv), null);   // no part drawn yet
+    const ff = parts();
+    for (let x = 0.8; x < 1; x += FRAME) r.draw(bundleAt(x, ff));
+    r.draw(bundleAt(1, ff));
+    env.gi.button(6, true);
+    env.gi.button(13, true);
+    r.draw(bundleAt(1 + FRAME, ff));
+    const st = api.getInstanceState(cv);
+    assert.equal(st.notesHit, 1);
+    assert.ok(st.score > 0);
+    assert.equal(st.partId, 'lead');
+    assert.equal(st.instrument, 'guitar');
+    assert.equal(st.sourceKind, 'chart');
+    assert.equal(st.controllerKey, 'Xbox#1');
+    assert.equal(st.connected, true);
+    const want = E.create({ notes: ff.lead.notes, beats: [], starPower: [], solos: [] }, { instrument: 'guitar' }).starThresholds;
+    assert.deepEqual(st.starThresholds, want);
+    // Seek back: the score starts over, the thresholds stay the full chart's.
+    r.draw(bundleAt(0.2, ff));
+    const st2 = api.getInstanceState(cv);
+    assert.equal(st2.notesHit, 0);
+    assert.deepEqual(st2.starThresholds, want);
+    env.gi.change('disconnect', 0);
+    assert.equal(api.getInstanceState(cv).connected, false);
+    assert.equal(api.getInstanceState(fakeElement('canvas')), null);
+});
+
+test('listControllers names, kinds and keys (two identical pads #1, #2; unknown non-standard kind null)', async (t) => {
+    const env = setup(t, { pads: [
+        { id: 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)', mapping: 'standard' },
+        { id: 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)', mapping: 'standard' },
+        { id: 'Guitar Hero Les Paul Wireless Guitar Controller', mapping: '' },
+        { id: 'Mystery Pad', mapping: '' },
+    ] });
+    P.saveBinding('Guitar Hero Les Paul Wireless Guitar Controller#1', { kind: 'guitar', map: GUITAR_MAP });
+    env.gi.claim(3, 'drums');
+    const p = env.win.feedBackFiveFret.listControllers();
+    assert.ok(p && typeof p.then === 'function');
+    const list = await p;
+    assert.deepEqual(list.map((c) => [c.index, c.name, c.kind, c.controllerKey, c.connected, c.claimedBy]), [
+        [0, 'Xbox Wireless Controller', 'gamepad', 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)#1', true, null],
+        [1, 'Xbox Wireless Controller 2', 'gamepad', 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)#2', true, null],
+        [2, 'Guitar Hero Les Paul Wir', 'guitar', 'Guitar Hero Les Paul Wireless Guitar Controller#1', true, null],
+        [3, 'Mystery Pad', null, 'Mystery Pad#1', true, 'drums'],
+    ]);
+    assert.equal(list[0].mapping, 'standard');
+    assert.equal(list[0].id, env.gi.pads[0].id);
+    // No gamepad-input domain: an empty list.
+    delete env.win.feedBack.gamepadInput;
+    assert.deepEqual(await env.win.feedBackFiveFret.listControllers(), []);
+});
+
+test('createMapper maps a standard pad\'s Start to pause', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    const p = api.createMapper('Xbox#1');
+    assert.ok(p && typeof p.then === 'function');
+    const m = await p;
+    assert.deepEqual(m.map({ type: 'button', index: 9, value: 1, pressed: true }), [{ action: 'pause', value: 1 }]);
+    assert.deepEqual(m.map({ type: 'button', index: 9, value: 0, pressed: false }), [{ action: 'pause', value: 0 }]);
+    assert.equal(await api.createMapper('Nope#1'), null);
+    assert.equal(await api.createMapper(''), null);
+});
+
+test('showAutoCharts reads the saved flag, default false', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    assert.equal(api.showAutoCharts(), false);
+    env.storage.setItem(P.SETTINGS_KEY, JSON.stringify({ showAutoCharts: true }));
+    assert.equal(api.showAutoCharts(), true);
+    env.storage.setItem(P.SETTINGS_KEY, '{oops');
+    assert.equal(api.showAutoCharts(), false);
+});
+
+test('openControls returns to returnTo on Back', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    api.openControls({ returnTo: 'plugin-build_a_band' });
+    assert.deepEqual(env.shown, ['plugin-five_fret']);
+    await openControls(env);
+    env.dom['five-fret-controls-back'].fire('click');
+    assert.equal(env.shown[env.shown.length - 1], 'plugin-build_a_band');
+    await leaveControls(env);
+    // Only for that visit: the next one (from Settings) goes home.
+    await openControls(env);
+    env.dom['five-fret-controls-back'].fire('click');
+    assert.equal(env.shown[env.shown.length - 1], 'home');
+    await leaveControls(env);
+    api.openControls();
+    await openControls(env);
+    env.dom['five-fret-controls-back'].fire('click');
+    assert.equal(env.shown[env.shown.length - 1], 'home');
 });
 
 // ── Controls screen ───────────────────────────────────────────────────────────────

@@ -278,6 +278,33 @@ test('pickPart: a missing instrument falls back to auto; no parts gives null', (
     assert.equal(S.pickPart(undefined, '', 'guitar'), null);
 });
 
+test('pickPart opts.exact returns null for a missing instrument', () => {
+    const p = parts();
+    const exact = { exact: true };
+    assert.equal(S.pickPart({ lead: p.lead, low: p.low }, 'Lead', 'rhythm', exact), null);
+    assert.equal(S.pickPart({ lead: p.lead }, 'Bass', 'bass', exact), null);
+    assert.equal(S.pickPart(p, 'Lead', 'rhythm', exact), 'rhy');
+    assert.equal(S.pickPart(p, 'Lead', 'bass', { exact: true, showAuto: false }), 'low');
+    // exact only pins an instrument: 'auto' still picks from the song.
+    assert.equal(S.pickPart(p, 'Bass', 'auto', exact), 'low');
+    // No opts, or exact off: the old fallback.
+    assert.equal(S.pickPart({ lead: p.lead }, 'Bass', 'bass', {}), 'lead');
+    assert.equal(S.pickPart({ lead: p.lead }, 'Bass', 'bass', null), 'lead');
+});
+
+test('session starThresholds: the full-chart thresholds, unchanged by a seek', () => {
+    const chart = chartOf(singles([1, 2, 3, 4, 5, 6]));
+    const { s, clock } = session(chart);
+    const want = E.create({ notes: chart.notes, beats: [], starPower: [], solos: [] }, { instrument: 'guitar' }).starThresholds;
+    assert.ok(Array.isArray(s.starThresholds) && s.starThresholds.length > 0);
+    assert.deepEqual(s.starThresholds, want);
+    const before = s.starThresholds.slice();
+    play(s, clock, 0, 4);
+    s.update(0.5);   // seek back
+    assert.equal(s.resets, 2);
+    assert.deepEqual(s.starThresholds, before);
+});
+
 test('inputChartTime: chart clock plus wall time since the frame, minus the offset', () => {
     const near = (a, b) => Math.abs(a - b) < 1e-9;
     assert.ok(near(S.inputChartTime(10, 500, 500.02), 10.02));

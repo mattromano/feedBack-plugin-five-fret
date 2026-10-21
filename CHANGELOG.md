@@ -3,6 +3,25 @@
 All notable changes to the 5-Fret plugin. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow `plugin.json`.
 
+## [0.2.0] - Unreleased
+
+### Added
+- Band API `window.feedBackFiveFret` (version 1) for Build-a-Band, modelled on `window.feedBackDrums`:
+  `setLane(canvas, { controllerKey, part, difficulty, lefty })` pins the renderer on a canvas (now, or
+  the one that inits on it later) to one controller, one part played exactly, a difficulty and lefty;
+  `clearLane`, `setDifficulty(id, canvas)`, `setScoreHudHidden` / `isScoreHudHidden`,
+  `getInstanceState(canvas)` (engine state plus the full chart's `starThresholds`, `partId`,
+  `instrument`, `sourceKind`, `controllerKey`, `connected`), `listControllers()` and
+  `createMapper(controllerKey)` (Promises; they load `profiles.js` on demand), `showAutoCharts()` and
+  `openControls({ returnTo })`.
+- A pinned lane holds its controller from `setLane` until `clearLane` or destroy, paused or not; it
+  never mounts the 5-Fret panel or saves `five_fret.settings.v1`, and its gamepad mode follows the
+  controller's kind.
+- `assets/session.js`: `pickPart(parts, arrangementName, setting, opts)` with
+  `opts = { exact?, showAuto? }` (`exact`: a missing instrument gives null); `session.starThresholds`.
+- `assets/highway3d.js`: `frame.scoreHidden` leaves the score, multiplier, streak, star power bar and
+  stars off the HUD.
+
 ## [0.1.0] - Unreleased
 
 ### Added

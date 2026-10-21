@@ -6,7 +6,7 @@
  * one part at one difficulty:
  *   createSession({ chart, instrument, difficulty, gamepadMode, offsetMs, pressed?, now? }) ->
  *     { input(action, value, tSong), update(tSong), releaseAll(tSong), pressedFrets(), whammy(), state(), noteState(i),
- *       drainEvents(), notes, difficulty, offsetMs, resets }
+ *       drainEvents(), notes, difficulty, offsetMs, resets, starThresholds }
  *   drainEvents(): engine events as { type: event name, ...payload } (a payload's note type is noteType).
  *   chart: a bundle.fiveFretParts entry plus `beats` ({ notes, levels, starPower, solos, beats }).
  *   tSong: highway chart time (bundle.currentTime). The input offset is applied here, to inputs and to
@@ -68,15 +68,18 @@
      * setting: 'guitar' | 'rhythm' | 'bass' takes the first part of that instrument; 'auto' (and an
      * instrument the song lacks) takes bass when the arrangement name contains "bass", else guitar,
      * else the first part. null when there are no parts.
+     * opts (optional) = { exact?, showAuto? }: exact makes an instrument setting the song lacks give
+     * null instead of falling back (a band lane pinned to Rhythm never plays Lead). showAuto is
+     * accepted for Plan 5's auto-chart gate and does not change the pick yet. No opts: as before.
      */
-    function pickPart(parts, arrangementName, setting) {
+    function pickPart(parts, arrangementName, setting, opts) {
         if (!parts || typeof parts !== 'object') return null;
         const ids = Object.keys(parts).filter((id) => parts[id] && typeof parts[id] === 'object');
         if (!ids.length) return null;
         const byInstrument = (inst) => ids.find((id) => parts[id].instrument === inst) || null;
         if (setting === 'guitar' || setting === 'rhythm' || setting === 'bass') {
             const id = byInstrument(setting);
-            if (id) return id;
+            if (id || (opts && opts.exact === true)) return id;
         }
         if (/bass/i.test(typeof arrangementName === 'string' ? arrangementName : '')) {
             const id = byInstrument('bass');
@@ -143,6 +146,8 @@
             starPower: Array.isArray(chart.starPower) ? chart.starPower : [],
             solos: Array.isArray(chart.solos) ? chart.solos : [],
         }, { instrument: opts.instrument === 'bass' ? 'bass' : 'guitar', gamepadMode: !!opts.gamepadMode });
+        // The full chart's star thresholds (engine.reset on a seek leaves them as they are).
+        const starThresholds = Object.freeze(Array.isArray(engine.starThresholds) ? engine.starThresholds.slice() : []);
 
         // Held frets carried over from a previous session (a rebuild while the player holds frets).
         const pressed = [0, 1, 2, 3, 4].map((k) => !!(Array.isArray(opts.pressed) && opts.pressed[k]));
@@ -218,6 +223,8 @@
             get difficulty() { return picked.difficulty; },
             get offsetMs() { return offsetMs; },
             get resets() { return resets; },
+            /** Star score thresholds for the whole chart (frozen), the same after any seek. */
+            get starThresholds() { return starThresholds; },
         };
         return api;
     }
