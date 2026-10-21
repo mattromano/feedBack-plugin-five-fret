@@ -4,13 +4,14 @@
  *
  * Modelled on feedBack-plugin-drums/assets/session.js createSession. Wraps one engine.js engine for
  * one part at one difficulty:
- *   createSession({ chart, instrument, difficulty, gamepadMode, offsetMs, now? }) ->
- *     { input(action, value, tSong), update(tSong), pressedFrets(), whammy(), state(), noteState(i),
+ *   createSession({ chart, instrument, difficulty, gamepadMode, offsetMs, pressed?, now? }) ->
+ *     { input(action, value, tSong), update(tSong), releaseAll(tSong), pressedFrets(), whammy(), state(), noteState(i),
  *       drainEvents(), notes, difficulty, offsetMs, resets }
  *   drainEvents(): engine events as { type: event name, ...payload } (a payload's note type is noteType).
  *   chart: a bundle.fiveFretParts entry plus `beats` ({ notes, levels, starPower, solos, beats }).
  *   tSong: highway chart time (bundle.currentTime). The input offset is applied here, to inputs and to
  *   the engine clock alike, so an offset input is never clamped forward to a clock that ran ahead.
+ *   pressed: bool[5] frets already held (a rebuild mid-song), applied to the engine on the first update.
  *   now(): wall clock in seconds (default performance.now() / 1000), for jump detection.
  *
  * Seeking / looping (Review Focus 4): update() compares the song advance since the last update with
@@ -35,10 +36,13 @@
     if (!E) throw new Error('session.js needs engine.js (window.FiveFretEngine)');
 
     const SEEK = 0.25;            // a jump of more than this (s) against the expected advance resets
+    const MAX_AHEAD = 0.06;       // an input is extrapolated at most this far (s) past the last frame
+    const NO_EVENTS = Object.freeze([]);
     const MAX_EVENTS = 256;
     const DIFFICULTIES = Object.freeze(['easy', 'medium', 'hard', 'expert']);
     const PART_SETTINGS = Object.freeze(['auto', 'guitar', 'rhythm', 'bass']);
     const FRETS = Object.freeze({ green: 0, red: 1, yellow: 2, blue: 3, orange: 4 });
+    const FRET_NAMES = Object.freeze(Object.keys(FRETS));
 
     const MSG_NO_PARTS = 'No 5-fret chart for this song';
     const MSG_NO_CONTROLLER = 'Connect a controller and press any button';
@@ -84,12 +88,15 @@
     /**
      * Chart time of a controller event: the chart time of the last drawn frame plus the wall time
      * since that frame (evT and lastFrameT in seconds, performance.now() / 1000), minus offsetMs.
-     * NaN when there is no frame yet or the event has no time.
+     * As the drums plugin's estimateTime, the wall time is clamped to 0..60 ms (a stalled or hidden
+     * highway must not push inputs far ahead of the clock), and not added at all when `playing` is
+     * false (paused: the chart clock stands still). NaN when there is no frame yet or no event time.
      */
-    function inputChartTime(lastChartTime, lastFrameT, evT, offsetMs) {
+    function inputChartTime(lastChartTime, lastFrameT, evT, offsetMs, playing) {
         if (!Number.isFinite(lastChartTime) || !Number.isFinite(lastFrameT) || !Number.isFinite(evT)) return NaN;
         const off = Number.isFinite(offsetMs) ? offsetMs : 0;
-        return lastChartTime + (evT - lastFrameT) - off / 1000;
+        const ahead = playing === false ? 0 : Math.min(MAX_AHEAD, Math.max(0, evT - lastFrameT));
+        return lastChartTime + ahead - off / 1000;
     }
 
     /** The HUD status line, or null when there is nothing to say. */
@@ -137,7 +144,8 @@
             solos: Array.isArray(chart.solos) ? chart.solos : [],
         }, { instrument: opts.instrument === 'bass' ? 'bass' : 'guitar', gamepadMode: !!opts.gamepadMode });
 
-        const pressed = [false, false, false, false, false];
+        // Held frets carried over from a previous session (a rebuild while the player holds frets).
+        const pressed = [0, 1, 2, 3, 4].map((k) => !!(Array.isArray(opts.pressed) && opts.pressed[k]));
         const events = [];
         let whammy = 0;
         let lastTime = null;   // player time (offset applied) of the last update
@@ -175,20 +183,33 @@
                 const t = +tSong - offset;
                 if (!Number.isFinite(t)) return;
                 const wall = now();
+                if (lastTime === null) {
+                    // Frets held when the session was built go into the engine first; reset() keeps
+                    // the held buttons and undoes anything those inputs judged.
+                    for (const name of FRET_NAMES) if (pressed[FRETS[name]]) engine.input(t, name, true);
+                }
                 // First update (possibly mid-song) or a seek / loop: start over here, no misses behind.
                 if (lastTime === null || isJump(lastTime, t, wall - lastWall)) reset(t);
                 else engine.update(t);
                 lastTime = t;
                 lastWall = wall;
             },
+            /**
+             * Let go of everything held (the controller unplugged): every held fret and star power is
+             * released at highway time tSong, so nothing stays latched.
+             */
+            releaseAll(tSong) {
+                for (const name of FRET_NAMES) if (pressed[FRETS[name]]) api.input(name, 0, tSong);
+                api.input('star_power', 0, tSong);
+            },
             /** Held frets as bool[5] (green..orange), from the inputs. Live array: do not mutate. */
             pressedFrets() { return pressed; },
             whammy() { return whammy; },
             state() { return engine.getState(); },
             noteState(i) { return engine.noteState(i); },
-            /** Engine events since the last call ({ type, ...payload }), oldest first. */
+            /** Engine events since the last call ({ type, ...payload }), oldest first (a shared frozen [] when none). */
             drainEvents() {
-                if (!events.length) return [];
+                if (!events.length) return NO_EVENTS;
                 const out = events.slice();
                 events.length = 0;
                 return out;

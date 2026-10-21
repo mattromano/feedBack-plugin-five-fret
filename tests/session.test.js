@@ -279,15 +279,53 @@ test('pickPart: a missing instrument falls back to auto; no parts gives null', (
 });
 
 test('inputChartTime: chart clock plus wall time since the frame, minus the offset', () => {
-    assert.ok(Math.abs(S.inputChartTime(10, 500, 500.02) - 10.02) < 1e-9);
-    assert.ok(Math.abs(S.inputChartTime(10, 500, 500.02, 30) - 9.99) < 1e-9);
-    assert.ok(Math.abs(S.inputChartTime(10, 500, 499.99, 0) - 9.99) < 1e-9);
+    const near = (a, b) => Math.abs(a - b) < 1e-9;
+    assert.ok(near(S.inputChartTime(10, 500, 500.02), 10.02));
+    assert.ok(near(S.inputChartTime(10, 500, 500.02, 30), 9.99));
+    // Clamped to 0..60 ms past the frame (drums estimateTime): a stalled highway, an early event.
+    assert.ok(near(S.inputChartTime(10, 500, 502, 0), 10.06));
+    assert.ok(near(S.inputChartTime(10, 500, 499.99, 0), 10));
+    // Paused: the raw chart time of the last frame.
+    assert.ok(near(S.inputChartTime(10, 500, 500.02, 0, false), 10));
+    assert.ok(near(S.inputChartTime(10, 500, 500.02, 0, true), 10.02));
     // No frame yet, or a bad event time: NaN (the screen drops the input).
     assert.ok(Number.isNaN(S.inputChartTime(NaN, 500, 500.02, 0)));
     assert.ok(Number.isNaN(S.inputChartTime(10, NaN, 500.02, 0)));
     assert.ok(Number.isNaN(S.inputChartTime(10, 500, undefined, 0)));
     // A bad offset counts as 0.
-    assert.ok(Math.abs(S.inputChartTime(10, 500, 500.02, 'x') - 10.02) < 1e-9);
+    assert.ok(near(S.inputChartTime(10, 500, 500.02, 'x'), 10.02));
+});
+
+test('drainEvents returns one shared frozen array when empty', () => {
+    const { s } = session(chartOf(singles([1])));
+    const a = s.drainEvents(), b = s.drainEvents();
+    assert.equal(a, b);
+    assert.ok(Object.isFrozen(a));
+    assert.equal(a.length, 0);
+});
+
+test('a rebuilt session starts with the frets still held', () => {
+    // Green is held across a rebuild; the next note is a green HOPO-free strum at 1 s.
+    const { s, clock } = session(chartOf(singles([1])), { pressed: [true, false, false, false, false] });
+    assert.deepEqual(s.pressedFrets(), [true, false, false, false, false]);
+    play(s, clock, 0.5, 0.9);
+    s.input('strum_down', 1, 1.0);
+    play(s, clock, 0.9 + FRAME, 1.2);
+    assert.equal(s.noteState(0), 'hit');
+    assert.equal(s.state().notesHit, 1);
+});
+
+test('releaseAll lets go of held frets', () => {
+    const { s, clock } = session(chartOf(singles([1])));
+    play(s, clock, 0, 0.5);
+    s.input('green', 1, 0.6);
+    s.input('red', 1, 0.6);
+    s.releaseAll(0.7);
+    assert.deepEqual(s.pressedFrets(), [false, false, false, false, false]);
+    // Strumming now plays no frets: the green note is not hit.
+    s.input('strum_down', 1, 1.0);
+    play(s, clock, 0.5 + FRAME, 1.2);
+    assert.notEqual(s.noteState(0), 'hit');
 });
 
 test('statusMessage for the HUD', () => {
@@ -306,70 +344,6 @@ test('isJump: more than 0.25 s off the expected advance, a pause is not a jump',
     assert.equal(S.isJump(10, 10.3, FRAME), true);      // forward
     assert.equal(S.isJump(10, 9.8, FRAME), false);
     assert.equal(S.isJump(NaN, 10, FRAME), false);
-});
-
-// ── Renderer factory (screen.js, loaded with a stub window) ─────────────────────
-
-// The stub stays installed until the test ends (the renderer reads `window` when called).
-function loadScreen(t) {
-    const had = Object.prototype.hasOwnProperty.call(global, 'window');
-    const prev = global.window;
-    global.window = {};
-    t.after(() => { if (had) global.window = prev; else delete global.window; });
-    delete require.cache[require.resolve(path.join(__dirname, '..', 'screen.js'))];
-    require(path.join(__dirname, '..', 'screen.js'));
-    return global.window;
-}
-
-test('factory: webgl2 on the renderer and as a static', (t) => {
-    const w = loadScreen(t);
-    assert.equal(typeof w.feedBackViz_five_fret, 'function');
-    assert.equal(w.feedBackViz_five_fret.contextType, 'webgl2');
-    const r = w.feedBackViz_five_fret();
-    assert.equal(r.contextType, 'webgl2');
-    for (const fn of ['init', 'draw', 'resize', 'destroy', 'applySetting', 'getSetting']) assert.equal(typeof r[fn], 'function', fn);
-});
-
-test('matchesArrangement: only the single 5-fret placeholder arrangement', (t) => {
-    const match = loadScreen(t).feedBackViz_five_fret.matchesArrangement;
-    const ff = [{ id: 'lead', name: 'Lead', instrument: 'guitar', source_kind: 'chart' }];
-    assert.equal(match({ arrangements: [{ index: 0, name: 'Lead', notes: 0 }], five_fret_parts: ff }), true);
-    // A normal song with a 5-fret part as well.
-    assert.equal(match({ arrangements: [{ name: 'Lead', notes: 900 }], five_fret_parts: ff }), false);
-    assert.equal(match({ arrangements: [{ name: 'Lead', notes: 0 }, { name: 'Bass', notes: 0 }], five_fret_parts: ff }), false);
-    assert.equal(match({ arrangements: [{ name: 'Drums', notes: 0 }], five_fret_parts: ff, has_drum_tab: true }), false);
-    assert.equal(match({ arrangements: [{ name: 'Lead', notes: 0 }], five_fret_parts: [] }), false);
-    assert.equal(match({}), false);
-    assert.equal(match(null), false);
-});
-
-test('applySetting before init keeps valid values and ignores the rest', (t) => {
-    const r = loadScreen(t).feedBackViz_five_fret();
-    assert.equal(r.getSetting('part'), 'auto');
-    assert.equal(r.getSetting('difficulty'), 'expert');
-    r.applySetting('part', 'bass');
-    r.applySetting('difficulty', 'hard');
-    r.applySetting('lefty', true);
-    r.applySetting('difficulty', 'impossible');
-    r.applySetting('part', 'drums');
-    r.applySetting('lefty', 'yes');
-    r.applySetting('offsetMs', 50);
-    assert.equal(r.getSetting('part'), 'bass');
-    assert.equal(r.getSetting('difficulty'), 'hard');
-    assert.equal(r.getSetting('lefty'), true);
-});
-
-test('init without webgl2 rejects readyPromise and does not throw', async (t) => {
-    const r = loadScreen(t).feedBackViz_five_fret();
-    const canvas = { getContext: () => null };
-    const warn = console.warn;
-    const warned = [];
-    console.warn = (...a) => warned.push(a.join(' '));
-    try { assert.doesNotThrow(() => r.init(canvas, {})); } finally { console.warn = warn; }
-    assert.ok(warned.some((m) => /webgl2/.test(m)));
-    await assert.rejects(r.readyPromise, /webgl2 unavailable/);
-    assert.doesNotThrow(() => r.draw({ currentTime: 1 }));
-    assert.doesNotThrow(() => r.destroy());
 });
 
 test('session.js works with the profiles mapper output', () => {

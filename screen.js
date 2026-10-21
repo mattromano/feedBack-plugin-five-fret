@@ -14,8 +14,9 @@
  *
  * Settings (part, difficulty, lefty, gamepadMode) are declared in plugin.json
  * capabilities.visualization.settings for splitscreen's per-panel popover (applySetting), and shown in
- * the normal player as a "5-Fret" panel in window.feedBack.ui.playerControlSlot(). Both save to
- * five_fret.settings.v1 (profiles.saveSettings).
+ * the normal player as a "5-Fret" panel in window.feedBack.ui.playerControlSlot(). Each instance keeps
+ * its own settings, seeded from five_fret.settings.v1; only the normal player's panel instance saves
+ * back to it (profiles.saveSettings), so splitscreen panels never change each other or the defaults.
  */
 (function () {
     'use strict';
@@ -40,16 +41,28 @@
     // ── Script loading (as the drums plugin) ──────────────────────────────────
 
     // A failed load removes its <script> element, so a later call for the same URL loads it again.
+    // A tag of ours still loading is waited for (data-five-fret: 'loading' -> 'loaded'); a tag
+    // someone else added counts as loaded.
     function _loadScript(url) {
         return new Promise((resolve, reject) => {
-            if (document.querySelector(`script[src="${url}"]`)) { resolve(); return; }
+            const existing = document.querySelector(`script[src="${url}"]`);
+            if (existing) {
+                if (existing.dataset && existing.dataset.fiveFret === 'loading') {
+                    existing.addEventListener('load', () => resolve(), { once: true });
+                    existing.addEventListener('error', () => reject(new Error('Failed to load ' + url)), { once: true });
+                } else {
+                    resolve();
+                }
+                return;
+            }
             const s = document.createElement('script');
             s.src = url;
-            s.onload = resolve;
-            s.onerror = () => {
+            s.dataset.fiveFret = 'loading';
+            s.addEventListener('load', () => { s.dataset.fiveFret = 'loaded'; resolve(); }, { once: true });
+            s.addEventListener('error', () => {
                 try { s.remove(); } catch (_) { /* already gone */ }
                 reject(new Error('Failed to load ' + url));
-            };
+            }, { once: true });
             document.head.appendChild(s);
         });
     }
@@ -82,7 +95,7 @@
     let _libsPromise = null;
     function _loadLibs() {
         if (_libsPromise) return _libsPromise;
-        _libsPromise = Promise.all([import(THREE_URL), _loadModules()])
+        _libsPromise = Promise.all([factory.importThree(), _loadModules()])
             .then(([THREE, m]) => Object.assign({ THREE }, m))
             .catch((e) => {
                 _libsPromise = null;
@@ -214,6 +227,9 @@
         let canvas = null, hud = null, view = null;
         let token = 0;
         let lastW = 0, lastH = 0, lastScale = 1;
+        // This instance's own settings (splitscreen panels never share them). Seeded from
+        // five_fret.settings.v1 once profiles.js has loaded; only the normal player's panel instance
+        // writes them back (see applySetting).
         let settings = { part: 'auto', difficulty: 'expert', lefty: false, gamepadMode: null, offsetMs: {} };
         let pending = {};                  // applySetting before profiles.js loaded
 
@@ -222,17 +238,36 @@
 
         // Session and clock
         let session = null;
+        // The picked part, recomputed only when the parts object (identity or key count), the
+        // arrangement name or the part setting changes.
+        const pick = { parts: null, count: -1, arrangement: null, setting: null, partId: null };
+        const statusArgs = { hasParts: false, hasController: false, connected: false };
         // What the session was built from: rebuilt when any of these change (compared field by field,
         // so the steady state allocates nothing).
         const built = { partId: null, part: null, difficulty: null, gamepadMode: null, offsetMs: null,
             notes: null, notesLen: -1, levelNotes: null, levelLen: -1, beats: null, beatsLen: -1 };
         let header = '', headerPart = null, headerSession = null, headerHandle = null;
-        let lastChartTime = NaN, lastFrameT = NaN;
+        let lastChartTime = NaN, lastFrameT = NaN, playing = true;
         const noteState = (i) => (session ? session.noteState(i) : null);
         const frame = {
             now: 0, notes: EMPTY, beats: EMPTY, starPower: EMPTY, solos: EMPTY, pressed: NO_PRESSED, whammy: 0,
             noteState, state: null, lefty: false, header: '', sourceKind: '', message: null,
         };
+
+        function countKeys(o) {
+            let n = 0;
+            for (const k in o) if (Object.prototype.hasOwnProperty.call(o, k)) n++;
+            return n;
+        }
+        function pickedPart(parts, arrangement) {
+            const count = parts && typeof parts === 'object' ? countKeys(parts) : 0;
+            if (pick.parts !== parts || pick.count !== count || pick.arrangement !== arrangement
+                || pick.setting !== settings.part) {
+                pick.parts = parts; pick.count = count; pick.arrangement = arrangement; pick.setting = settings.part;
+                pick.partId = H.pickPart(parts, arrangement, settings.part);
+            }
+            return pick.partId;
+        }
 
         function gamepadMode() {
             return P ? P.effectiveGamepadMode(settings, binding) : false;
@@ -259,7 +294,7 @@
                 }
                 if (!session) continue;
                 // The session applies the input offset (to inputs and its clock), so none here.
-                const t = H.inputChartTime(lastChartTime, lastFrameT, ev.t);
+                const t = H.inputChartTime(lastChartTime, lastFrameT, ev.t, 0, playing);
                 if (Number.isFinite(t)) session.input(a.action, a.value, t);
             }
         }
@@ -296,8 +331,15 @@
             if (!ev) return;
             if (handle) {
                 if (ev.index !== handle.index) return;
-                if (ev.type === 'disconnect') connected = false;
-                else if (ev.type === 'connect') connected = true;
+                if (ev.type === 'disconnect') {
+                    connected = false;
+                    // Nothing stays latched while it is gone: release every held fret, and start the
+                    // mapper over so a still-down button reads as a fresh press when events resume.
+                    if (session) session.releaseAll(H.inputChartTime(lastChartTime, lastFrameT, _wallNow(), 0, playing));
+                    if (binding) mapper = P.createMapper(binding);
+                } else if (ev.type === 'connect') {
+                    connected = true;
+                }
             } else if (ev.type === 'connect' || ev.type === 'release') {
                 tryClaim();
             }
@@ -335,6 +377,7 @@
                 difficulty: settings.difficulty,
                 gamepadMode: gm,
                 offsetMs: off,
+                pressed: session ? session.pressedFrets() : null,   // frets still held carry over
             });
         }
 
@@ -420,8 +463,8 @@
                     if (my !== token) throw new Error('superseded');
                     P = libs.P;
                     H = libs.H;
-                    settings = P.loadSettings();
-                    if (Object.keys(pending).length) { settings = P.saveSettings(pending); pending = {}; }
+                    settings = Object.assign(P.loadSettings(), pending);
+                    pending = {};
                     view = libs.V.createView(libs.THREE, cv, { hudCanvas: hud, context: gl });
                     doResize();
                     const gi = _gamepadInput();
@@ -444,9 +487,9 @@
                 lastChartTime = t;
                 lastFrameT = _wallNow();
 
+                playing = bundle.isPlaying !== false;
                 const parts = bundle.fiveFretParts;
-                const songInfo = bundle.songInfo || {};
-                const partId = H.pickPart(parts, songInfo.arrangement, settings.part);
+                const partId = pickedPart(parts, bundle.songInfo ? bundle.songInfo.arrangement : undefined);
                 const part = partId ? parts[partId] : null;
                 const beats = Array.isArray(bundle.beats) ? bundle.beats : EMPTY;
                 if (part) {
@@ -468,16 +511,23 @@
                 frame.lefty = !!settings.lefty;
                 frame.header = part ? headerFor(part) : '';
                 frame.sourceKind = part ? part.sourceKind : '';
-                frame.message = H.statusMessage({ hasParts: !!part, hasController: !!handle, connected });
+                statusArgs.hasParts = !!part;
+                statusArgs.hasController = !!handle;
+                statusArgs.connected = connected;
+                frame.message = H.statusMessage(statusArgs);
                 view.render(frame);
             },
             resize() { doResize(); },
             destroy() { teardown(); },
             applySetting(key, value) {
                 if (!_validSetting(key, value)) return;
-                if (P) settings = P.saveSettings({ [key]: value });
-                else { pending[key] = value; settings = Object.assign({}, settings, { [key]: value }); }
-                if (_panelOwner === instance) _syncPanel();
+                settings = Object.assign({}, settings, { [key]: value });
+                if (!P) pending[key] = value;
+                if (_panelOwner === instance) {
+                    // The normal player: its panel's choices are the saved defaults.
+                    if (P) P.saveSettings({ [key]: value });
+                    _syncPanel();
+                }
             },
             getSetting(key) {
                 if (key === 'gamepadMode') return gamepadMode();
@@ -487,8 +537,11 @@
         return instance;
     }
 
-    window.feedBackViz_five_fret = function () { return createRenderer(); };
-    window.feedBackViz_five_fret.contextType = 'webgl2';
+    function factory() { return createRenderer(); }
+    factory.contextType = 'webgl2';
+    // three.js loader, a seam the Node tests replace (core's vendored ES module in the app).
+    factory.importThree = () => import(THREE_URL);
+    window.feedBackViz_five_fret = factory;
     // Auto mode: only a 5-fret-only pack, whose arrangement list is the single placeholder core adds
     // for it (named after the first 5-fret part, no notes). Lives here, not in session.js: Auto mode
     // asks before any instance has loaded the assets.

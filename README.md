@@ -97,7 +97,8 @@ The renderer (`window.feedBackViz_five_fret`, WebGL2) plays one part of the song
   Seeking or looping (a jump of more than 0.25 s) starts the scoring over from the new position
   without counting the skipped notes as misses.
 - **Settings:** part, difficulty, lefty and gamepad mode, in a "5-Fret" panel in the player's plugin
-  controls or in splitscreen's per-panel settings. Both save to `five_fret.settings.v1`.
+  controls or in splitscreen's per-panel settings. Each highway keeps its own settings, starting
+  from the saved ones; the normal player's panel saves its choices to `five_fret.settings.v1`.
 
 `assets/session.js` (`window.FiveFretSession`) holds the scoring session and the renderer's pure
 helpers (`pickPart`, `inputChartTime`, `statusMessage`, `isJump`).
