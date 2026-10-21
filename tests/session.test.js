@@ -384,3 +384,77 @@ test('session.js works with the profiles mapper output', () => {
     assert.equal(s.noteState(0), 'hit');
     assert.ok(E.ACTIONS.length > 0);
 });
+
+// ── Auto-chart star power (Ruling 5) ───────────────────────────────────────────
+
+// 120 BPM 4/4: a beat every 0.5 s, a downbeat (measure >= 0) every 4 beats, so a measure is 2 s.
+function beats120(seconds) {
+    const out = [];
+    for (let i = 0; i * 0.5 <= seconds + 1e-9; i++) out.push({ time: i * 0.5, measure: i % 4 === 0 ? i / 4 : -1 });
+    return out;
+}
+const SECTIONS = [{ time: 0, name: 'Intro' }, { time: 16, name: 'Verse' }];
+// Intro (0..16 s): 32 notes; Verse (16 s on): 3 notes.
+function sectionNotes() {
+    const times = [];
+    for (let t = 0; t < 16; t += 0.5) times.push(t);
+    return singles(times.concat([16.5, 17, 17.5]));
+}
+
+test('auto part: a section with 8+ notes gets one phrase over its last 2 measures', () => {
+    const chart = chartOf(sectionNotes(), { sourceKind: 'auto', sections: SECTIONS, beats: beats120(20) });
+    const { s, clock } = session(chart, { gamepadMode: true });
+    // The Intro's last note (15.5 s) is in measure 7 (14..16 s): measures 6 and 7, 12..16 s.
+    assert.deepEqual(s.starPower, [{ start_time: 12, end_time: 16 }]);
+    // The engine earns it as a phrase: every note in 12..16 s hit -> sp-phrase, a quarter bar.
+    let t = 0;
+    for (const n of chart.notes) {
+        if (n.t >= 16) break;
+        play(s, clock, t, n.t - FRAME);
+        s.input('green', 1, n.t);
+        s.input('green', 0, n.t + 0.1);
+        t = n.t;
+    }
+    play(s, clock, t, 16.2);
+    assert.equal(s.drainEvents().filter((e) => e.type === 'sp-phrase').length, 1);
+    assert.equal(s.state().starPower.amount, 0.25);
+});
+
+test('a section with fewer than 8 notes gets none', () => {
+    const notes = singles([0, 1, 2, 3, 4, 5, 6, 16.5, 17]);   // Intro 7 notes, Verse 2
+    const s = session(chartOf(notes, { sourceKind: 'auto', sections: SECTIONS, beats: beats120(20) })).s;
+    assert.deepEqual(s.starPower, []);
+    // No sections: no phrases either.
+    assert.deepEqual(session(chartOf(sectionNotes(), { sourceKind: 'auto', beats: beats120(20) })).s.starPower, []);
+});
+
+test('a chart part\'s phrases are unchanged', () => {
+    const own = [{ start_time: 1, end_time: 3 }];
+    const chart = chartOf(sectionNotes(), { sourceKind: 'chart', sections: SECTIONS, beats: beats120(20), starPower: own });
+    assert.equal(session(chart).s.starPower, own);
+    // A chart part with no phrases gets none synthesised.
+    const bare = chartOf(sectionNotes(), { sourceKind: 'chart', sections: SECTIONS, beats: beats120(20) });
+    assert.deepEqual(session(bare).s.starPower, []);
+});
+
+test('auto phrases without downbeats: 4 beats a measure, else 2 s measures (120 BPM 4/4)', () => {
+    // Beats every 0.25 s with no downbeats: a measure is 4 beats = 1 s. Last Intro note 15.5 s ->
+    // measure 15 (15..16 s): phrase 14..16 s.
+    const quick = [];
+    for (let i = 0; i * 0.25 <= 20; i++) quick.push({ time: i * 0.25, measure: -1 });
+    const a = session(chartOf(sectionNotes(), { sourceKind: 'auto', sections: SECTIONS, beats: quick })).s;
+    assert.deepEqual(a.starPower, [{ start_time: 14, end_time: 16 }]);
+    // No beats at all: 2 s measures from 0, as the engine assumes. Phrase 12..16 s.
+    const b = session(chartOf(sectionNotes(), { sourceKind: 'auto', sections: SECTIONS, beats: [] })).s;
+    assert.deepEqual(b.starPower, [{ start_time: 12, end_time: 16 }]);
+});
+
+test('auto phrases: the last section ends after its last note; a short section is one phrase', () => {
+    // One section from 0 with 8 notes in 1.5 s: shorter than 2 measures, so the phrase is the whole
+    // section (from its start), ending just after the last note.
+    const notes = singles([0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2.25]);
+    const s = session(chartOf(notes, { sourceKind: 'auto', sections: [{ time: 0.25, name: 'Song' }], beats: beats120(4) })).s;
+    assert.equal(s.starPower.length, 1);
+    assert.equal(s.starPower[0].start_time, 0.25);
+    assert.ok(s.starPower[0].end_time > 2.25);
+});
