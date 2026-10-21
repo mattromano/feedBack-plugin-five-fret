@@ -1,0 +1,14 @@
+<!-- 5-Fret controls screen (#plugin-five_fret). screen.js fills in the controller cards and wires
+     them each time the screen opens (core's screen:changed). Core-guaranteed classes only. -->
+<div class="max-w-3xl mx-auto p-6">
+    <button type="button" id="five-fret-controls-back" class="text-fb-textDim text-sm mb-4"
+            style="background:none;border:0;padding:0;cursor:pointer;">&larr; Back</button>
+    <h2 class="text-2xl font-bold text-fb-text mb-1">5-Fret controls</h2>
+    <p class="text-fb-textDim text-sm mb-6">
+        Set up a plastic guitar or a gamepad for 5-Fret, rebind single buttons, and set each
+        controller's input offset. A standard gamepad works without setup. While this screen is open
+        it holds your controllers, so their buttons light up here; leaving gives them back to the
+        player. Everything is saved in this browser.
+    </p>
+    <div id="five-fret-controls-list"></div>
+</div>

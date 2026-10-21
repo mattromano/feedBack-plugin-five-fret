@@ -5,8 +5,8 @@ song's 5-fret part with a game controller or a plastic guitar, judged and scored
 [YARG](https://github.com/YARC-Official/YARG.Core)'s five-fret engine.
 
 Status: in development. This version ships the scoring engine (`assets/engine.js`), controller
-profiles (`assets/profiles.js`), the tilted 3D highway view (`assets/highway3d.js`) and the player
-renderer (`screen.js`, with `assets/session.js`); the controller setup screen comes next.
+profiles (`assets/profiles.js`), the tilted 3D highway view (`assets/highway3d.js`), the player
+renderer (`screen.js`, with `assets/session.js`) and the controls screen (`screen.html`).
 
 ## Scoring engine
 
@@ -102,6 +102,30 @@ The renderer (`window.feedBackViz_five_fret`, WebGL2) plays one part of the song
 
 `assets/session.js` (`window.FiveFretSession`) holds the scoring session and the renderer's pure
 helpers (`pickPart`, `inputChartTime`, `statusMessage`, `isJump`).
+
+## Controls screen
+
+**5-Fret controls** (the plugin's screen: the player panel's "Controller setup…" link, or Settings →
+5-Fret) lists the connected controllers. While it is open it claims each free one (owner
+`five_fret.controls`; the player's renderers let theirs go and take them back when you leave), so
+its buttons, axes and actions light up as you press them. For each controller:
+
+- **Set up as guitar** asks, in order, for green, red, yellow, blue, orange, strum down, strum up,
+  whammy, star power and pause; **Set up as gamepad** asks for the standard gamepad profile's
+  actions. Each takes the first new button press, or an axis moving more than 0.5 from rest
+  (recorded with its direction, so one axis can strum both ways). A control already used is
+  ignored. **Skip** leaves an action unbound; **Cancel** saves nothing.
+- **Rebind** one action: pick it, then press the button or move the axis. The other actions stay.
+- **Input offset** in ms (−200 to 200, step 5), per controller.
+- **Calibrate** plays 12 clicks (it is the only thing on the screen that makes sound, and only when
+  clicked): strum along, and the offset is set to the median of strum-minus-nearest-click, ignoring
+  pairs more than 150 ms apart.
+
+Bindings are saved to `five_fret.bindings.v1` and offsets to `five_fret.settings.v1`. Each save is
+announced on `window.feedBack` (`five_fret:bindings-changed`, `five_fret:offset-changed`), and a
+running renderer re-reads its binding and offset, so a plastic guitar set up mid-song is claimed
+straight away. The pure helpers are in `assets/profiles.js`: `SETUP_ACTIONS`,
+`createSetupRecorder(actions, { used?, rest? })` and `calibrationOffset(clickTimes, strumTimes)`.
 
 ## Tests
 

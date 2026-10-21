@@ -154,8 +154,109 @@
         return !!binding && binding.kind === 'gamepad';
     }
 
+    // ── Setup (the controls screen) ───────────────────────────────────────────
+
+    // The actions "Set up as guitar" / "Set up as gamepad" ask for, in order.
+    const SETUP_ACTIONS = Object.freeze({
+        guitar: Object.freeze(['green', 'red', 'yellow', 'blue', 'orange',
+            'strum_down', 'strum_up', 'whammy', 'star_power', 'pause']),
+        gamepad: Object.freeze(['green', 'red', 'yellow', 'blue', 'orange', 'open',
+            'strum_down', 'strum_up', 'whammy', 'star_power', 'pause']),
+    });
+    const SETUP_AXIS_MOVE = 0.5;   // an axis counts once it is this far from rest
+
+    // A control's identity: a button, or one direction of an axis (an axis can strum both ways).
+    function controlId(spec) {
+        return spec.type === 'axis' ? `axis:${spec.index}:${spec.sign < 0 ? -1 : 1}` : `button:${spec.index}`;
+    }
+
+    // Walks `actions`, taking for each the first new button press or an axis moving more than 0.5
+    // from rest (recorded with its sign), and ignoring a control already used (by this walk or
+    // opts.used). opts.rest = { [axisIndex]: restValue }; an axis with no rest given takes the first
+    // value it reports as its rest. Pure: feed(ev) -> { done, next, binding, recorded }, where
+    // binding is { map } once done (else null) and recorded is { action, spec } when ev recorded one.
+    function createSetupRecorder(actions, opts) {
+        const list = Array.isArray(actions) ? actions.slice() : [];
+        const o = opts || {};
+        const used = new Set();
+        if (Array.isArray(o.used)) for (const s of o.used) if (s && (s.type === 'button' || s.type === 'axis')) used.add(controlId(s));
+        const rest = Object.create(null);
+        if (o.rest && typeof o.rest === 'object') {
+            for (const k of Object.keys(o.rest)) if (Number.isFinite(o.rest[k])) rest[k] = o.rest[k];
+        }
+        const down = new Set();   // buttons held now
+        const map = {};
+        let i = 0;
+
+        const result = (recorded) => {
+            const done = i >= list.length;
+            return { done, next: done ? null : list[i], binding: done ? { map: Object.assign({}, map) } : null, recorded };
+        };
+        function take(spec) {
+            const id = controlId(spec);
+            if (used.has(id)) return result(null);
+            used.add(id);
+            map[list[i]] = spec;
+            const recorded = { action: list[i], spec };
+            i++;
+            return result(recorded);
+        }
+
+        return {
+            get next() { return i < list.length ? list[i] : null; },
+            feed(ev) {
+                if (!ev || !Number.isInteger(ev.index) || ev.index < 0) return result(null);
+                if (ev.type === 'button') {
+                    const v = Number(ev.value);
+                    const pressed = typeof ev.pressed === 'boolean' ? ev.pressed : (Number.isFinite(v) && v >= PRESS_AT);
+                    if (!pressed) { down.delete(ev.index); return result(null); }
+                    if (down.has(ev.index)) return result(null);
+                    down.add(ev.index);
+                    if (i >= list.length) return result(null);
+                    return take({ type: 'button', index: ev.index });
+                }
+                if (ev.type === 'axis') {
+                    const v = Number(ev.value);
+                    if (!Number.isFinite(v)) return result(null);
+                    if (!(ev.index in rest)) { rest[ev.index] = v; return result(null); }
+                    const d = v - rest[ev.index];
+                    if (i >= list.length || Math.abs(d) <= SETUP_AXIS_MOVE) return result(null);
+                    return take({ type: 'axis', index: ev.index, sign: d < 0 ? -1 : 1 });
+                }
+                return result(null);
+            },
+            // Leave the current action unbound and move on.
+            skip() {
+                if (i < list.length) i++;
+                return result(null);
+            },
+        };
+    }
+
+    const CALIBRATION_MAX_PAIR = 0.150;   // seconds: a strum further than this from every click is ignored
+
+    // Input offset (ms) from a calibration run: the median, over the strums, of (strum - nearest
+    // click), ignoring pairs more than 150 ms apart. Times in seconds. Positive = the player is late
+    // (the session subtracts it). null when no strum is near a click.
+    function calibrationOffset(clickTimes, strumTimes) {
+        const clicks = Array.isArray(clickTimes) ? clickTimes.filter(Number.isFinite) : [];
+        const strums = Array.isArray(strumTimes) ? strumTimes.filter(Number.isFinite) : [];
+        if (!clicks.length) return null;
+        const diffs = [];
+        for (const s of strums) {
+            let best = Infinity;
+            for (const c of clicks) if (Math.abs(s - c) < Math.abs(best)) best = s - c;
+            if (Math.abs(best) <= CALIBRATION_MAX_PAIR + 1e-9) diffs.push(best * 1000);
+        }
+        if (!diffs.length) return null;
+        diffs.sort((a, b) => a - b);
+        const mid = diffs.length >> 1;
+        return diffs.length % 2 ? diffs[mid] : (diffs[mid - 1] + diffs[mid]) / 2;
+    }
+
     return {
         ACTIONS,
+        SETUP_ACTIONS,
         STANDARD_GAMEPAD,
         BINDINGS_KEY,
         SETTINGS_KEY,
@@ -168,5 +269,7 @@
         saveSettings,
         setOffset,
         effectiveGamepadMode,
+        createSetupRecorder,
+        calibrationOffset,
     };
 });

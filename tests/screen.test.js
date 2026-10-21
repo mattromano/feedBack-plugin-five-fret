@@ -16,21 +16,41 @@ const FRAME = 1 / 60;
 // ── Fakes ────────────────────────────────────────────────────────────────────────
 
 function fakeElement(tag) {
+    const classes = new Set();
     const el = {
         tagName: String(tag).toUpperCase(), children: [], style: {}, dataset: {}, listeners: {}, parentNode: null,
         width: 800, height: 600, clientWidth: 800, clientHeight: 600, offsetLeft: 0, offsetTop: 0, offsetParent: {},
+        textContent: '', value: '', disabled: false, hidden: false, className: '',
+        classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c), contains: (c) => classes.has(c) },
         appendChild(c) { if (c.parentNode) c.remove(); c.parentNode = el; el.children.push(c); return c; },
+        append(...cs) { for (const c of cs) el.appendChild(c); },
         insertBefore(c) { return el.appendChild(c); },
+        replaceChildren(...cs) { for (const c of el.children.slice()) c.remove(); for (const c of cs) el.appendChild(c); },
         remove() {
             const p = el.parentNode;
             if (p) { p.children.splice(p.children.indexOf(el), 1); el.parentNode = null; }
         },
         contains(c) { for (let n = c; n; n = n.parentNode) if (n === el) return true; return false; },
         addEventListener(type, fn) { (el.listeners[type] || (el.listeners[type] = [])).push(fn); },
+        removeEventListener(type, fn) { el.listeners[type] = (el.listeners[type] || []).filter((f) => f !== fn); },
+        fire(type) { for (const fn of (el.listeners[type] || []).slice()) fn({ type, target: el }); },
         getContext(type) { return type === 'webgl2' ? {} : null; },
         getBoundingClientRect() { return { width: 800, height: 600 }; },
     };
     return el;
+}
+// Depth-first search by data-ff (the controls screen tags its controls for tests).
+function find(root, ff) {
+    if (!root) return null;
+    if (root.dataset && root.dataset.ff === ff) return root;
+    for (const c of root.children || []) { const r = find(c, ff); if (r) return r; }
+    return null;
+}
+function findAll(root, ff, out) {
+    out = out || [];
+    if (root.dataset && root.dataset.ff === ff) out.push(root);
+    for (const c of root.children || []) findAll(c, ff, out);
+    return out;
 }
 
 function memoryStorage() {
@@ -38,33 +58,93 @@ function memoryStorage() {
     return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, removeItem: (k) => m.delete(k) };
 }
 
-// One standard gamepad in slot 0 (or none).
-function fakeGamepadInput(withPad) {
+// A fake core gamepad-input domain: one owner per controller (claim by the same owner returns the
+// same handle), claim/release announced as change events, as core's static/capabilities/gamepad-input.js.
+// pads: [{ id, mapping }] in slots 0..n (default: one standard 'Xbox' pad; none with pad:false).
+function fakeGamepadInput(pads) {
+    const held = new Map();   // index -> { owner, handle, listeners }
     const gi = {
-        version: 1, claims: 0, releases: 0, changeFns: [], listeners: [],
-        list() { return withPad ? [{ index: 0, id: 'Xbox', mapping: 'standard', connected: true, claimedBy: gi.held ? 'five_fret' : null }] : []; },
+        version: 1, claims: 0, releases: 0, changeFns: [], pads,
+        get listeners() { const c = held.get(0); return c ? c.listeners : []; },
+        list() {
+            return pads.map((p, index) => ({ index, id: p.id, mapping: p.mapping, connected: true,
+                claimedBy: held.has(index) ? held.get(index).owner : null }));
+        },
+        owner(index) { const c = held.get(index); return c ? c.owner : null; },
         claim(index, owner) {
-            if (!withPad || gi.held) return null;
+            if (!pads[index]) return null;
+            const c = held.get(index);
+            if (c) return c.owner === owner ? c.handle : null;
             gi.claims++;
-            gi.held = true;
-            return {
-                index, id: 'Xbox', controllerKey: 'Xbox#1',
-                addListener(fn) { gi.listeners.push(fn); },
-                removeListener(fn) { gi.listeners = gi.listeners.filter((f) => f !== fn); },
-                release() { gi.held = false; gi.releases++; },
+            const rec = { owner, listeners: [] };
+            const n = pads.slice(0, index + 1).filter((p) => p.id === pads[index].id).length;
+            rec.handle = {
+                index, id: pads[index].id, controllerKey: pads[index].id + '#' + n,
+                addListener(fn) { if (!rec.listeners.includes(fn)) rec.listeners = rec.listeners.concat(fn); },
+                removeListener(fn) { rec.listeners = rec.listeners.filter((f) => f !== fn); },
+                release() {
+                    if (held.get(index) !== rec) return;
+                    held.delete(index);
+                    gi.releases++;
+                    gi.change('release', index);
+                },
             };
+            held.set(index, rec);
+            gi.change('claim', index);
+            return rec.handle;
         },
         on(name, fn) {
             gi.changeFns.push(fn);
             return () => { gi.changeFns = gi.changeFns.filter((f) => f !== fn); };
         },
         change(type, index) { for (const fn of gi.changeFns.slice()) fn({ type, index }); },
-        button(index, pressed) {
-            const ev = { type: 'button', index, value: pressed ? 1 : 0, pressed, t: performance.now() / 1000 };
-            for (const fn of gi.listeners.slice()) fn(ev);
+        emit(ev, padIndex) {
+            const c = held.get(padIndex || 0);
+            if (c) for (const fn of c.listeners.slice()) fn(ev);
+        },
+        button(index, pressed, padIndex) {
+            gi.emit({ type: 'button', index, value: pressed ? 1 : 0, pressed, t: performance.now() / 1000 }, padIndex);
+        },
+        axis(index, value, padIndex) {
+            gi.emit({ type: 'axis', index, value, t: performance.now() / 1000 }, padIndex);
         },
     };
     return gi;
+}
+
+// window.feedBack's bus (emit -> CustomEvent-like { detail }).
+function fakeBus() {
+    const fns = {};
+    return {
+        on(name, fn) { (fns[name] || (fns[name] = [])).push(fn); },
+        off(name, fn) { fns[name] = (fns[name] || []).filter((f) => f !== fn); },
+        emit(name, detail) { for (const fn of (fns[name] || []).slice()) fn({ type: name, detail }); },
+        count(name) { return (fns[name] || []).length; },
+    };
+}
+
+// Web Audio stub: counts contexts and scheduled clicks; nothing plays.
+function fakeAudio() {
+    const audio = { contexts: [], clicks: 0 };
+    audio.AudioContext = function () {
+        const ctx = {
+            currentTime: 0, state: 'running', closed: false, destination: {}, baseLatency: 0, outputLatency: 0,
+            resume() { return Promise.resolve(); },
+            close() { ctx.closed = true; ctx.state = 'closed'; return Promise.resolve(); },
+            createOscillator() {
+                return { type: '', frequency: { value: 0 }, connect() {}, start() { audio.clicks++; }, stop() {} };
+            },
+            createGain() {
+                return { gain: { value: 1, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} };
+            },
+            // Output clock: context time 0 is heard at performance time ctx.perfZero (seconds).
+            perfZero: 100,
+            getOutputTimestamp() { return { contextTime: 0, performanceTime: ctx.perfZero * 1000 }; },
+        };
+        audio.contexts.push(ctx);
+        return ctx;
+    };
+    return audio;
 }
 
 // Installs window/document/localStorage for one test; returns the environment.
@@ -77,8 +157,17 @@ function setup(t, opts) {
     const slot = fakeElement('div');
     const renders = [];
     const views = [];
-    const gi = fakeGamepadInput(opts.pad !== false);
-    const storage = memoryStorage();
+    const gi = fakeGamepadInput(opts.pads || (opts.pad === false ? [] : [{ id: 'Xbox', mapping: 'standard' }]));
+    const storage = opts.storage || memoryStorage();
+    const bus = fakeBus();
+    const audio = fakeAudio();
+    // The controls screen's DOM as core mounts screen.html (#plugin-five_fret).
+    const dom = {
+        'plugin-five_fret': fakeElement('div'),
+        'five-fret-controls-list': fakeElement('div'),
+        'five-fret-controls-back': fakeElement('button'),
+    };
+    const shown = [];
     const win = {
         FiveFretEngine: E, FiveFretProfiles: P, FiveFretSession: S, FiveFretLayout: {},
         FiveFretHighway3D: {
@@ -96,12 +185,14 @@ function setup(t, opts) {
                 return v;
             },
         },
-        feedBack: { uiVersion: 'v3', ui: { playerControlSlot: () => slot }, gamepadInput: gi, on() {}, off() {} },
+        feedBack: Object.assign(bus, { uiVersion: 'v3', ui: { playerControlSlot: () => slot }, gamepadInput: gi }),
         togglePlays: 0,
         devicePixelRatio: 1,
+        AudioContext: audio.AudioContext,
+        showScreen: (id) => shown.push(id),
     };
     win.togglePlay = () => { win.togglePlays++; };
-    const doc = { createElement: fakeElement, getElementById: () => null, querySelector: () => null, querySelectorAll: () => [], head: fakeElement('head') };
+    const doc = { createElement: fakeElement, getElementById: (id) => dom[id] || null, querySelector: () => null, querySelectorAll: () => [], head: fakeElement('head') };
     for (const [k, v] of [['window', win], ['document', doc], ['localStorage', storage]]) {
         Object.defineProperty(global, k, { value: v, configurable: true, writable: true });
     }
@@ -113,7 +204,8 @@ function setup(t, opts) {
     delete require.cache[require.resolve(path.join(__dirname, '..', 'screen.js'))];
     require(path.join(__dirname, '..', 'screen.js'));
     win.feedBackViz_five_fret.importThree = () => Promise.resolve({});
-    return { win, slot, renders, views, gi, storage, last: () => renders[renders.length - 1] };
+    return { win, slot, renders, views, gi, bus, audio, dom, shown, storage, list: dom['five-fret-controls-list'],
+        last: () => renders[renders.length - 1] };
 }
 
 const G = 1, R = 2;
@@ -257,6 +349,248 @@ test('destroy releases the claim, removes the panel and view; init again works',
     assert.equal(env.slot.children.length, 1);
     r.draw(bundleAt(0, ff));
     assert.equal(env.last().message, null);
+});
+
+// ── Bindings changed mid-session ──────────────────────────────────────────────────
+
+const GUITAR_MAP = {
+    green: { type: 'button', index: 0 }, red: { type: 'button', index: 1 }, yellow: { type: 'button', index: 2 },
+    blue: { type: 'button', index: 3 }, orange: { type: 'button', index: 4 },
+    strum_down: { type: 'axis', index: 1, sign: 1 }, strum_up: { type: 'axis', index: 1, sign: -1 },
+    whammy: { type: 'axis', index: 2, sign: 1 }, star_power: { type: 'button', index: 5 }, pause: { type: 'button', index: 6 },
+};
+const tick = () => new Promise((r) => setImmediate(r));
+
+test('a binding saved mid-session is picked up by the renderer (five_fret:bindings-changed)', async (t) => {
+    const env = setup(t);
+    const ff = parts();
+    const r = await started(env);
+    r.draw(bundleAt(0, ff));
+    assert.equal(env.last().header, 'Lead · GAMEPAD · Expert');
+    P.saveBinding('Xbox#1', { kind: 'guitar', map: GUITAR_MAP });
+    env.bus.emit('five_fret:bindings-changed', { controllerKey: 'Xbox#1' });
+    r.draw(bundleAt(FRAME, ff));
+    assert.equal(env.last().header, 'Lead · GUITAR · Expert');
+    env.gi.button(0, true);    // green under the new binding (the standard map has orange there)
+    r.draw(bundleAt(2 * FRAME, ff));
+    assert.deepEqual(env.last().pressed, [true, false, false, false, false]);
+    assert.equal(env.gi.claims, 1);   // same claim, new binding
+
+    // An unbound controller (a plastic guitar) is claimed once a binding for it is saved.
+    const env2 = setup(t, { pads: [{ id: 'Guitar', mapping: '' }] });
+    const r2 = await started(env2);
+    r2.draw(bundleAt(0, ff));
+    assert.equal(env2.gi.claims, 0);
+    assert.equal(env2.last().message, 'Connect a controller and press any button');
+    P.saveBinding('Guitar#1', { kind: 'guitar', map: GUITAR_MAP });
+    env2.bus.emit('five_fret:bindings-changed', { controllerKey: 'Guitar#1' });
+    r2.draw(bundleAt(FRAME, ff));
+    assert.equal(env2.gi.owner(0), 'five_fret');
+    assert.equal(env2.last().message, null);
+    r2.destroy();
+    assert.equal(env2.bus.count('five_fret:bindings-changed'), 0);
+});
+
+// ── Controls screen ───────────────────────────────────────────────────────────────
+
+function openControls(env) { env.bus.emit('screen:changed', { id: 'plugin-five_fret', from: 'player' }); return tick(); }
+function leaveControls(env) { env.bus.emit('screen:changed', { id: 'home', from: 'plugin-five_fret' }); return tick(); }
+
+test('controls screen claims while open; the renderer yields and takes the controller back on leave', async (t) => {
+    const env = setup(t);
+    const ff = parts();
+    const r = await started(env);
+    assert.equal(env.gi.owner(0), 'five_fret');
+    await openControls(env);
+    assert.equal(env.gi.owner(0), 'five_fret.controls');
+    assert.ok(find(env.list, 'setup-guitar'), 'a card with setup buttons');
+    assert.match(find(env.list, 'status').textContent, /gamepad/i);
+    // While the screen holds it, the renderer does not try to claim it back.
+    env.gi.change('connect', 0);
+    r.draw(bundleAt(0, ff));
+    assert.equal(env.gi.owner(0), 'five_fret.controls');
+    // Live lights: the pressed button's chip and its action light up.
+    env.gi.button(6, true);
+    assert.equal(find(env.list, 'raw-button-6').dataset.on, '1');
+    assert.equal(find(env.list, 'action-green').dataset.on, '1');
+    env.gi.button(6, false);
+    assert.equal(find(env.list, 'action-green').dataset.on, '0');
+    await leaveControls(env);
+    assert.equal(env.gi.owner(0), 'five_fret');
+    assert.equal(env.list.children.length, 0);
+    assert.equal(env.gi.changeFns.length, 1);   // only the renderer's subscription is left
+    r.draw(bundleAt(FRAME, ff));
+    assert.equal(env.last().message, null);
+    // Opening again works; a second open while open is a no-op.
+    await openControls(env);
+    await openControls(env);
+    assert.equal(env.gi.owner(0), 'five_fret.controls');
+    assert.equal(findAll(env.list, 'setup-guitar').length, 1);
+    // Back goes home.
+    env.dom['five-fret-controls-back'].fire('click');
+    assert.deepEqual(env.shown, ['home']);
+});
+
+test('controls screen with no controller, and a controller held by another plugin', async (t) => {
+    const env = setup(t, { pad: false });
+    await openControls(env);
+    assert.match(env.list.children[0].textContent, /No controllers/);
+    await leaveControls(env);
+
+    const env2 = setup(t);
+    env2.gi.claim(0, 'drums');
+    await openControls(env2);
+    assert.equal(env2.gi.owner(0), 'drums');
+    assert.match(find(env2.list, 'status').textContent, /In use by drums/);
+    assert.equal(find(env2.list, 'setup-guitar'), null);
+});
+
+test('set up as guitar walks the actions, saves the binding, and the renderer plays with it', async (t) => {
+    const env = setup(t, { pads: [{ id: 'Guitar', mapping: '' }] });
+    const ff = parts();
+    const r = await started(env);
+    assert.equal(env.gi.claims, 0);
+    await openControls(env);
+    assert.match(find(env.list, 'status').textContent, /Not set up/);
+    assert.equal(find(env.list, 'rebind').disabled, true);
+    assert.equal(find(env.list, 'calibrate').disabled, true);   // no binding to read strums through
+    find(env.list, 'calibrate').fire('click');
+    assert.equal(env.audio.contexts.length, 0);
+    find(env.list, 'setup-guitar').fire('click');
+    const prompt = find(env.list, 'prompt');
+    const promptText = find(env.list, 'prompt-text');
+    assert.equal(prompt.hidden, false);
+    assert.match(promptText.textContent, /Green/);
+    for (let b = 0; b < 5; b++) { env.gi.button(b, true); env.gi.button(b, false); }
+    env.gi.button(0, true);   // green again: already used, ignored
+    env.gi.button(0, false);
+    assert.match(promptText.textContent, /Strum down/);
+    env.gi.axis(1, 0);        // the axis's rest
+    env.gi.axis(1, 1);
+    env.gi.axis(1, 0);
+    env.gi.axis(1, -1);
+    env.gi.axis(1, 0);
+    assert.match(promptText.textContent, /whammy/i);
+    find(env.list, 'skip').fire('click');   // no whammy on this one
+    env.gi.button(5, true);
+    env.gi.button(6, true);
+    const saved = P.loadBindings()['Guitar#1'];
+    assert.equal(saved.kind, 'guitar');
+    const want = Object.assign({}, GUITAR_MAP);
+    delete want.whammy;
+    assert.deepEqual(saved.map, want);
+    assert.equal(prompt.hidden, true);
+    assert.match(find(env.list, 'status').textContent, /guitar/i);
+    assert.equal(find(env.list, 'rebind').disabled, false);
+    assert.equal(find(env.list, 'calibrate').disabled, false);
+    await leaveControls(env);
+    // The renderer claims it with the saved binding.
+    assert.equal(env.gi.owner(0), 'five_fret');
+    r.draw(bundleAt(0, ff));
+    assert.equal(env.last().header, 'Lead · GUITAR · Expert');
+});
+
+test('setup can be cancelled, and leaving mid-setup saves nothing', async (t) => {
+    const env = setup(t, { pads: [{ id: 'Guitar', mapping: '' }] });
+    await openControls(env);
+    find(env.list, 'setup-gamepad').fire('click');
+    env.gi.button(3, true);
+    find(env.list, 'cancel').fire('click');
+    assert.equal(find(env.list, 'prompt').hidden, true);
+    env.gi.button(4, true);
+    find(env.list, 'setup-guitar').fire('click');
+    env.gi.button(0, true);
+    await leaveControls(env);
+    assert.deepEqual(P.loadBindings(), {});
+});
+
+test('rebind one action keeps the rest and ignores controls other actions use', async (t) => {
+    const env = setup(t);
+    let emitted = 0;
+    env.bus.on('five_fret:bindings-changed', () => { emitted++; });
+    await openControls(env);
+    find(env.list, 'rebind-action').value = 'green';
+    find(env.list, 'rebind').fire('click');
+    assert.match(find(env.list, 'prompt-text').textContent, /Green/);
+    env.gi.button(4, true);    // red's button: ignored
+    env.gi.button(1, true);
+    const saved = P.loadBindings()['Xbox#1'];
+    assert.equal(saved.kind, 'gamepad');
+    assert.deepEqual(saved.map.green, { type: 'button', index: 1 });
+    assert.deepEqual(saved.map.red, { type: 'button', index: 4 });
+    assert.deepEqual(saved.map.whammy, { type: 'axis', index: 2 });
+    assert.equal(emitted, 1);
+    // The card's lights follow the new binding.
+    env.gi.button(1, false);
+    env.gi.button(1, true);
+    assert.equal(find(env.list, 'action-green').dataset.on, '1');
+});
+
+test('input offset: step 5, clamped to ±200, saved per controller, picked up by the renderer', async (t) => {
+    const env = setup(t);
+    const ff = parts();
+    const r = await started(env);
+    await openControls(env);
+    const input = find(env.list, 'offset');
+    assert.equal(input.min, '-200');
+    assert.equal(input.max, '200');
+    assert.equal(input.step, '5');
+    assert.equal(input.value, '0');
+    input.value = '23';
+    input.fire('change');
+    assert.equal(input.value, '25');
+    assert.equal(P.loadSettings().offsetMs['Xbox#1'], 25);
+    input.value = '-999';
+    input.fire('change');
+    assert.equal(input.value, '-200');
+    input.value = 'abc';
+    input.fire('change');
+    assert.equal(input.value, '-200');
+    input.value = '200';
+    input.fire('change');
+    assert.equal(P.loadSettings().offsetMs['Xbox#1'], 200);
+    await leaveControls(env);
+    // A strum 200 ms after the note is on time with the new offset.
+    for (let x = 0.8; x < 1.2; x += FRAME) r.draw(bundleAt(x, ff));
+    r.draw(bundleAt(1.2, ff));
+    env.gi.button(6, true);
+    env.gi.button(13, true);
+    r.draw(bundleAt(1.2 + FRAME, ff));
+    assert.equal(env.last().hits, 1);
+});
+
+test('calibrate plays clicks only after a click, with a visible note, and sets the median offset', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const env = setup(t);
+    await openControls(env);
+    // Opening the screen makes no sound.
+    assert.equal(env.audio.contexts.length, 0);
+    const note = find(env.list, 'calibrate-note');
+    assert.match(note.textContent, /plays clicks/i);
+    assert.equal(note.hidden, false);
+    find(env.list, 'calibrate').fire('click');
+    assert.equal(env.audio.contexts.length, 1);
+    assert.equal(env.audio.clicks, 12);
+    const ctx = env.audio.contexts[0];
+    // Strum 30 ms after each heard click (context time 1.0 + 0.6 i, heard at perfZero + that).
+    for (let i = 0; i < 12; i++) {
+        const at = ctx.perfZero + 1.0 + 0.6 * i + (i === 5 ? 0.4 : 0.03);   // one stray strum
+        env.gi.emit({ type: 'button', index: 13, value: 1, pressed: true, t: at });
+        env.gi.emit({ type: 'button', index: 13, value: 0, pressed: false, t: at + 0.05 });
+    }
+    t.mock.timers.tick(20000);
+    assert.equal(ctx.closed, true);
+    assert.equal(P.loadSettings().offsetMs['Xbox#1'], 30);
+    assert.equal(find(env.list, 'offset').value, '30');
+    assert.match(find(env.list, 'calib-status').textContent, /30 ms/);
+
+    // Leaving mid-calibration stops the clicks and saves nothing.
+    find(env.list, 'calibrate').fire('click');
+    assert.equal(env.audio.contexts.length, 2);
+    await leaveControls(env);
+    assert.equal(env.audio.contexts[1].closed, true);
+    t.mock.timers.tick(20000);
+    assert.equal(P.loadSettings().offsetMs['Xbox#1'], 30);
 });
 
 // ── Factory ───────────────────────────────────────────────────────────────────────

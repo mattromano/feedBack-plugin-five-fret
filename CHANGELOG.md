@@ -30,3 +30,12 @@ All notable changes to the 5-Fret plugin. The format follows
   shows "No 5-fret chart for this song", "Connect a controller and press any button" and "Controller
   disconnected" on the HUD, pauses on Start, and has per-panel settings (`plugin.json`
   `capabilities.visualization.settings`) and a "5-Fret" panel in the player's plugin controls.
+- Controls screen (`screen.html`, `settings.html` links to it): lists controllers with live button,
+  axis and action lights; **Set up as guitar** / **Set up as gamepad**, **Rebind** one action,
+  per-controller **Input offset** (−200..200 ms, step 5) and **Calibrate** (clicks, only on request;
+  median strum offset, pairs over 150 ms ignored). It claims controllers while open
+  (`five_fret.controls`) and releases them on leave. `assets/profiles.js`: `SETUP_ACTIONS`,
+  `createSetupRecorder`, `calibrationOffset`.
+- The renderer picks up bindings and offsets saved mid-session (`five_fret:bindings-changed`,
+  `five_fret:offset-changed`) and lets its controller go while the controls screen is open
+  (`five_fret:controls-screen`).
