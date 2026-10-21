@@ -5,8 +5,8 @@ song's 5-fret part with a game controller or a plastic guitar, judged and scored
 [YARG](https://github.com/YARC-Official/YARG.Core)'s five-fret engine.
 
 Status: in development. This version ships the scoring engine (`assets/engine.js`), controller
-profiles (`assets/profiles.js`) and the tilted 3D highway view (`assets/highway3d.js`); the player
-wiring, controller setup and settings come next.
+profiles (`assets/profiles.js`), the tilted 3D highway view (`assets/highway3d.js`) and the player
+renderer (`screen.js`, with `assets/session.js`); the controller setup screen comes next.
 
 ## Scoring engine
 
@@ -81,6 +81,26 @@ fret buttons light from `pressed`, hit gems flash and vanish, and missed gems di
 header tag, **AUTO CHART** for auto-charted parts, the score, the multiplier and streak, the star
 power bar, the stars and the solo percent. `lefty` mirrors the lanes. Meshes are built once and
 reused, and `render` makes no DOM queries.
+
+## Player
+
+Pick **5-Fret** in the player's visualization picker (Auto mode picks it for a 5-fret-only song).
+The renderer (`window.feedBackViz_five_fret`, WebGL2) plays one part of the song's 5-fret chart:
+
+- **Part:** the `part` setting, `auto` | `guitar` | `rhythm` | `bass`. `auto` takes the bass part
+  when the current arrangement's name contains "bass", else the guitar part, else the first part. A
+  part the song lacks falls back to `auto`.
+- **Controller:** it claims the first free controller with a binding (a standard gamepad works out of
+  the box) through core's `gamepad-input` domain. Start pauses. If it unplugs, the song keeps going
+  without input and the highway says "Controller disconnected" until it is back.
+- **Timing:** inputs are judged on the highway's chart clock, minus the controller's input offset.
+  Seeking or looping (a jump of more than 0.25 s) starts the scoring over from the new position
+  without counting the skipped notes as misses.
+- **Settings:** part, difficulty, lefty and gamepad mode, in a "5-Fret" panel in the player's plugin
+  controls or in splitscreen's per-panel settings. Both save to `five_fret.settings.v1`.
+
+`assets/session.js` (`window.FiveFretSession`) holds the scoring session and the renderer's pure
+helpers (`pickPart`, `inputChartTime`, `statusMessage`, `isJump`).
 
 ## Tests
 

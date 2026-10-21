@@ -24,3 +24,9 @@ All notable changes to the 5-Fret plugin. The format follows
 - `assets/layout.js` and `assets/highway3d.js`: the tilted 3D 5-fret highway (gems, HOPO glow, taps,
   open bars, sustain tails that wobble while held, star power, solo bands, fret buttons, hit flashes)
   with a HUD (header tag, AUTO CHART, score, multiplier, streak, star power bar, stars, solo percent).
+- `assets/session.js` and `screen.js`: the player renderer `window.feedBackViz_five_fret` (WebGL2).
+  Picks the part by the `part` setting, claims a controller through `gamepad-input`, judges inputs on
+  the highway chart clock with the input offset, resets on seeks of more than 0.25 s without misses,
+  shows "No 5-fret chart for this song", "Connect a controller and press any button" and "Controller
+  disconnected" on the HUD, pauses on Start, and has per-panel settings (`plugin.json`
+  `capabilities.visualization.settings`) and a "5-Fret" panel in the player's plugin controls.

@@ -26,6 +26,83 @@
       "safety": "sensitive",
       "description": "Claims one game controller (gamepad or plastic guitar) through the core gamepad-input domain and reads its buttons and axes for 5-fret play. Absent domain: no controller, fail-soft.",
       "version": 1
+    },
+    "visualization": {
+      "roles": [
+        "provider"
+      ],
+      "operations": [
+        "renderer.create",
+        "renderer.destroy"
+      ],
+      "emits": [
+        "renderer-ready",
+        "renderer-failed"
+      ],
+      "mode": "active",
+      "safety": "safe",
+      "settings": [
+        {
+          "key": "part",
+          "label": "Part",
+          "type": "select",
+          "default": "auto",
+          "options": [
+            {
+              "id": "auto",
+              "label": "Auto"
+            },
+            {
+              "id": "guitar",
+              "label": "Guitar"
+            },
+            {
+              "id": "rhythm",
+              "label": "Rhythm"
+            },
+            {
+              "id": "bass",
+              "label": "Bass"
+            }
+          ]
+        },
+        {
+          "key": "difficulty",
+          "label": "Difficulty",
+          "type": "select",
+          "default": "expert",
+          "options": [
+            {
+              "id": "easy",
+              "label": "Easy"
+            },
+            {
+              "id": "medium",
+              "label": "Medium"
+            },
+            {
+              "id": "hard",
+              "label": "Hard"
+            },
+            {
+              "id": "expert",
+              "label": "Expert"
+            }
+          ]
+        },
+        {
+          "key": "lefty",
+          "label": "Lefty",
+          "type": "toggle",
+          "default": false
+        },
+        {
+          "key": "gamepadMode",
+          "label": "Gamepad mode",
+          "type": "toggle",
+          "default": true
+        }
+      ]
     }
   },
   "category": "practice",
