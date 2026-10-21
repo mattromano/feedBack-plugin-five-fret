@@ -17,7 +17,10 @@
  * one controller (controllerKey), one part exactly, and the pinned difficulty and lefty. It holds that
  * controller from setLane (once it is connected) until clearLane or destroy, paused or not; the claim
  * rule above is for unpinned renderers. A pinned renderer never mounts the panel or saves settings,
- * and its gamepad mode follows the controller's kind, not the saved setting.
+ * and its gamepad mode follows the controller's kind, not the saved setting. Its Start and a 1 s hold
+ * of Back are bus events for Build-a-Band (five_fret:band-pause, five_fret:band-back-hold); it never
+ * calls togglePlay. Every instance (pinned or not) puts its judgments and star power on the bus as
+ * five_fret:<type> (BAND_EVENTS), each with detail.canvas.
  *
  * Time: the engine runs on the highway's chart clock. Each draw records (bundle.currentTime,
  * performance.now() / 1000); a controller event's time is that chart time plus the wall time since the
@@ -54,6 +57,20 @@
     const EV_CONTROLS = 'five_fret:controls-screen';    // { open }: the screen claims controllers while open
     const EV_BINDINGS = 'five_fret:bindings-changed';   // { controllerKey }: a binding was saved
     const EV_OFFSET = 'five_fret:offset-changed';       // { controllerKey, offsetMs }: an input offset was saved
+    // Judgments and star power for Build-a-Band (engine event type -> bus name), from every instance's
+    // draw. detail: the engine payload plus { canvas, controllerKey, partId, instrument, score, combo,
+    // multiplier, spActive, resets } (see emitBandEvents).
+    const BAND_EVENTS = Object.freeze({
+        hit: 'five_fret:hit', miss: 'five_fret:miss', overstrum: 'five_fret:overstrum',
+        'sustain-end': 'five_fret:sustain-end', 'sp-phrase': 'five_fret:sp-phrase',
+        'sp-ready': 'five_fret:sp-ready', 'sp-activate': 'five_fret:sp-activate', 'sp-end': 'five_fret:sp-end',
+    });
+    // A band lane's Start, and Back held BACK_HOLD_S, go to Build-a-Band ({ controllerKey, canvas }):
+    // it pauses and offers to leave. A band lane never calls togglePlay itself.
+    const EV_BAND_PAUSE = 'five_fret:band-pause';
+    const EV_BAND_BACK_HOLD = 'five_fret:band-back-hold';
+    const BACK_BUTTON = 8;      // Back / Select on standard-mapped pads (bindings have no back action)
+    const BACK_HOLD_S = 1;
     let _controlsOpen = false;   // renderers don't claim while the controls screen is open
     // Band lanes, by canvas (see window.feedBackFiveFret): a pin made before an instance inits on the
     // canvas, or across a re-init, still applies. _byCanvas finds the live instance drawing on one.
@@ -288,9 +305,15 @@
         // wantClaim: a part is playing (see "Claim" above). readyKind: while no controller is held, the
         // binding kind of the one tryClaim would take (null: none), for the header and status while paused.
         let wantClaim = false, readyKind = null, claiming = false;
+        // A band lane's Back hold: when it went down (event clock, seconds; NaN while up), whether this
+        // hold has fired, and whether the binding leaves BACK_BUTTON free (not bound to an action).
+        let backDownAt = NaN, backFired = false, backFree = false;
 
         // Session and clock
         let session = null;
+        // Scoring restarts in sessions this instance has dropped (a rebuild, a song without the part),
+        // so a band event's `resets` (resetBase + session.resets) only ever goes up.
+        let resetBase = 0;
         // The picked part, recomputed only when the parts object (identity or key count), the
         // arrangement name or the part setting changes.
         const pick = { parts: null, count: -1, arrangement: null, setting: null, exact: false, partId: null };
@@ -298,7 +321,8 @@
         // What the session was built from: rebuilt when any of these change (compared field by field,
         // so the steady state allocates nothing).
         const built = { partId: null, part: null, difficulty: null, gamepadMode: null, offsetMs: null,
-            notes: null, notesLen: -1, levelNotes: null, levelLen: -1, beats: null, beatsLen: -1 };
+            notes: null, notesLen: -1, levelNotes: null, levelLen: -1, beats: null, beatsLen: -1,
+            sections: null, sectionsLen: -1 };
         let header = '', headerPart = null, headerSession = null, headerInput = null;
         let lastChartTime = NaN, lastFrameT = NaN, playing = true;
         const noteState = (i) => (session ? session.noteState(i) : null);
@@ -338,14 +362,45 @@
 
         // ── Controller ──
 
+        // The binding (and its mapper) we play with; a held Back is forgotten.
+        function useBinding(b) {
+            binding = b;
+            mapper = P.createMapper(b);
+            backFree = true;
+            const map = b && b.map ? b.map : {};
+            for (const k in map) {
+                const spec = map[k];
+                if (spec && spec.type === 'button' && spec.index === BACK_BUTTON) backFree = false;
+            }
+            backDownAt = NaN;
+        }
+
+        // A band lane's Back button: note when it goes down and comes up (the draw fires the hold).
+        function trackBack(ev) {
+            if (!backFree || ev.type !== 'button' || ev.index !== BACK_BUTTON) return;
+            let v = Number(ev.value);
+            if (!Number.isFinite(v)) v = ev.pressed ? 1 : 0;
+            if (v >= 0.5) {
+                if (backDownAt !== backDownAt) {   // NaN: it was up
+                    backDownAt = Number.isFinite(ev.t) ? ev.t : _wallNow();
+                    backFired = false;
+                }
+            } else if (v < 0.3) {
+                backDownAt = NaN;
+            }
+        }
+
         function onEvent(ev) {
             connected = true;   // events resume after a reconnect
             if (!mapper || !ev) return;
+            if (pin) trackBack(ev);
             const out = mapper.map(ev);
             for (let i = 0; i < out.length; i++) {
                 const a = out[i];
                 if (a.action === 'pause') {
-                    if (a.value && typeof window.togglePlay === 'function') {
+                    if (!a.value) continue;
+                    if (pin) _emit(EV_BAND_PAUSE, { controllerKey: pin.controllerKey, canvas });
+                    else if (typeof window.togglePlay === 'function') {
                         try { window.togglePlay(); } catch (e) { console.warn('[5-Fret] togglePlay failed:', e); }
                     }
                     continue;
@@ -407,8 +462,7 @@
                     if (!b) { h.release(); continue; }
                     handle = h;
                     handleInfo = c.info;
-                    binding = b;
-                    mapper = P.createMapper(b);
+                    useBinding(b);
                     connected = true;
                     h.addListener(onEvent);
                     return;
@@ -428,7 +482,7 @@
                     // Nothing stays latched while it is gone: release every held fret, and start the
                     // mapper over so a still-down button reads as a fresh press when events resume.
                     if (session) session.releaseAll(H.inputChartTime(lastChartTime, lastFrameT, _wallNow(), 0, playing));
-                    if (binding) mapper = P.createMapper(binding);
+                    if (binding) useBinding(binding);
                 } else if (ev.type === 'connect') {
                     connected = true;
                 }
@@ -443,6 +497,7 @@
             if (!handle) return;
             const h = handle;
             handle = null; handleInfo = null; mapper = null; connected = false;
+            backDownAt = NaN;
             if (!park) binding = null;
             if (session) session.releaseAll(H.inputChartTime(lastChartTime, lastFrameT, _wallNow(), 0, playing));
             try { h.removeListener(onEvent); h.release(); } catch (_) { /* ignore */ }
@@ -481,13 +536,18 @@
             const b = P.resolveBinding(handleInfo, P.loadBindings()[handle.controllerKey]);
             if (!b) { dropHandle(); tryClaim(); return; }
             if (session) session.releaseAll(H.inputChartTime(lastChartTime, lastFrameT, _wallNow(), 0, playing));
-            binding = b;
-            mapper = P.createMapper(b);
+            useBinding(b);
         }
 
         // ── Session ──
 
-        function ensureSession(partId, part, beats) {
+        // Forget the session, keeping count of the scoring restarts it made.
+        function dropSession() {
+            if (session) resetBase += session.resets;
+            session = null;
+        }
+
+        function ensureSession(partId, part, beats, sections) {
             const difficulty = cur().difficulty;
             const levels = part.levels || {};
             const lv = levels[difficulty];
@@ -499,19 +559,52 @@
                 && b.gamepadMode === gm && b.offsetMs === off
                 && b.notes === part.notes && b.notesLen === (part.notes ? part.notes.length : -1)
                 && b.levelNotes === levelNotes && b.levelLen === (levelNotes ? levelNotes.length : -1)
-                && b.beats === beats && b.beatsLen === beats.length) return;
+                && b.beats === beats && b.beatsLen === beats.length
+                && b.sections === sections && b.sectionsLen === sections.length) return;
             b.partId = partId; b.part = part; b.difficulty = difficulty; b.gamepadMode = gm; b.offsetMs = off;
             b.notes = part.notes; b.notesLen = part.notes ? part.notes.length : -1;
             b.levelNotes = levelNotes; b.levelLen = levelNotes ? levelNotes.length : -1;
             b.beats = beats; b.beatsLen = beats.length;
+            b.sections = sections; b.sectionsLen = sections.length;
+            const pressed = session ? session.pressedFrets() : null;   // frets still held carry over
+            dropSession();
             session = H.createSession({
-                chart: { notes: part.notes, levels, starPower: part.starPower, solos: part.solos, beats },
+                // sourceKind and sections: an auto part's star power phrases (session.autoStarPower).
+                chart: { notes: part.notes, levels, starPower: part.starPower, solos: part.solos, beats,
+                    sourceKind: part.sourceKind, sections },
                 instrument: part.instrument === 'bass' ? 'bass' : 'guitar',
                 difficulty,
                 gamepadMode: gm,
                 offsetMs: off,
-                pressed: session ? session.pressedFrets() : null,   // frets still held carry over
+                pressed,
             });
+        }
+
+        // This draw's engine events on core's bus (BAND_EVENTS), only with a bus that can emit. They
+        // are the session's own event objects, given the band fields in place, and `state` is the
+        // draw's one session.state() read; a draw without events does nothing. A throwing listener is
+        // the listener's problem, never the draw's.
+        function emitBandEvents(events, state) {
+            if (!events.length) return;
+            const bus = _bus();
+            if (!bus) return;
+            const controllerKey = handle ? handle.controllerKey : (pin ? pin.controllerKey : null);
+            const resets = resetBase + session.resets;
+            for (let i = 0; i < events.length; i++) {
+                const ev = events[i];
+                const name = BAND_EVENTS[ev.type];
+                if (!name) continue;
+                ev.canvas = canvas;
+                ev.controllerKey = controllerKey;
+                ev.partId = built.partId;
+                ev.instrument = built.part.instrument;
+                ev.score = state.score;
+                ev.combo = state.combo;
+                ev.multiplier = state.multiplier;
+                ev.spActive = state.starPower.active;
+                ev.resets = resets;
+                try { bus.emit(name, ev); } catch (_) { /* listeners only */ }
+            }
         }
 
         // "PART · INPUT · DIFFICULTY", rebuilt only when the part, session or input label changes. INPUT is
@@ -575,7 +668,7 @@
             if (hud) { try { hud.remove(); } catch (_) { /* gone */ } }
             hud = null;
             canvas = null;
-            session = null;
+            dropSession();
             headerPart = headerSession = headerInput = null;
             lastChartTime = lastFrameT = NaN;
             lastW = lastH = 0;
@@ -640,11 +733,12 @@
                 const part = partId ? parts[partId] : null;
                 const beats = Array.isArray(bundle.beats) ? bundle.beats : EMPTY;
                 if (part) {
-                    ensureSession(partId, part, beats);
+                    // Sections only matter to an auto part (its star power), so they never rebuild a chart's.
+                    const sections = part.sourceKind === 'auto' && Array.isArray(bundle.sections) ? bundle.sections : EMPTY;
+                    ensureSession(partId, part, beats, sections);
                     session.update(t);
-                    session.drainEvents();   // nothing consumes them yet; keep the queue short
                 } else {
-                    session = null;
+                    dropSession();
                 }
                 // Hold the controller only while a part plays (see "Claim" above); a band lane always.
                 const want = pin ? true : (!!part && playing);
@@ -657,7 +751,7 @@
                 frame.now = t;
                 frame.notes = session ? session.notes : EMPTY;
                 frame.beats = beats;
-                frame.starPower = part && Array.isArray(part.starPower) ? part.starPower : EMPTY;
+                frame.starPower = session ? session.starPower : EMPTY;   // an auto part's synthesised ones too
                 frame.solos = part && Array.isArray(part.solos) ? part.solos : EMPTY;
                 frame.pressed = session ? session.pressedFrets() : NO_PRESSED;
                 frame.whammy = session ? session.whammy() : 0;
@@ -672,6 +766,12 @@
                 statusArgs.connected = handle ? connected : true;
                 frame.message = H.statusMessage(statusArgs);
                 view.render(frame);
+                if (session) emitBandEvents(session.drainEvents(), frame.state);
+                // A band lane's Back held BACK_HOLD_S: once per hold (a release before then cancels it).
+                if (pin && handle && !backFired && backDownAt === backDownAt && lastFrameT - backDownAt >= BACK_HOLD_S) {
+                    backFired = true;
+                    _emit(EV_BAND_BACK_HOLD, { controllerKey: pin.controllerKey, canvas });
+                }
             },
             resize() { doResize(); },
             destroy() { teardown(); },

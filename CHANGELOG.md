@@ -21,6 +21,15 @@ All notable changes to the 5-Fret plugin. The format follows
   `opts = { exact?, showAuto? }` (`exact`: a missing instrument gives null); `session.starThresholds`.
 - `assets/highway3d.js`: `frame.scoreHidden` leaves the score, multiplier, streak, star power bar and
   stars off the HUD.
+- Judgment and star power events on core's bus from every renderer: `five_fret:hit`, `miss`,
+  `overstrum`, `sustain-end`, `sp-phrase`, `sp-ready`, `sp-activate`, `sp-end`, with the engine payload
+  plus `canvas`, `controllerKey`, `partId`, `instrument`, `score`, `combo`, `multiplier`, `spActive`
+  (one state read per frame) and `resets` (scoring restarts: first frame, seeks, rebuilds).
+- A pinned lane's Start emits `five_fret:band-pause` and a 1 s hold of Back (button 8)
+  `five_fret:band-back-hold` (`{ controllerKey, canvas }`) instead of pausing the song.
+- Auto-charted parts get star power: one phrase over the last 2 measures of each song section with at
+  least 8 notes (`session.autoStarPower`, `session.starPower`). A phrase needs all its notes hit
+  (YARG), not the spec's 90%.
 
 ## [0.1.0] - Unreleased
 

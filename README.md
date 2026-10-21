@@ -95,7 +95,8 @@ The renderer (`window.feedBackViz_five_fret`, WebGL2) plays one part of the song
   the controls screen first, else a standard gamepad (which works out of the box), each in slot
   order. It holds the controller only while a 5-fret part is playing: paused, before playback, or on
   a song with no 5-fret part it lets go, so core's menus work (A plays/pauses, B goes back) and a
-  controller-only player can always leave. Start pauses. If it unplugs, the song keeps going without
+  controller-only player can always leave. Start pauses (in a band lane, Build-a-Band does: see
+  Band API). If it unplugs, the song keeps going without
   input and the highway says "Controller disconnected" until it is back.
 - **Timing:** inputs are judged on the highway's chart clock, minus the controller's input offset.
   Seeking or looping (a jump of more than 0.25 s) starts the scoring over from the new position
@@ -109,6 +110,17 @@ helpers (`pickPart`, `inputChartTime`, `statusMessage`, `isJump`). `pickPart(par
 setting, opts)` takes `opts = { exact?, showAuto? }`: `exact` gives null for an instrument the song
 lacks instead of falling back; `showAuto` is reserved for the auto-chart setting and changes nothing
 yet.
+
+**Star power on auto charts.** An auto-charted part (`sourceKind: 'auto'`) has no star power phrases
+of its own, so the session makes them from the song's sections (`bundle.sections`, each running to the
+next one's start; `autoStarPower(notes, sections, beats)`): every section with at least 8 notes gets
+one phrase over its last 2 measures, the last measure being the one holding the section's last note
+(never starting before the section). Measures come from `bundle.beats` downbeats, as the engine
+counts them; with fewer than two downbeats 4 beats make a measure, and with no beats a measure is
+2 s (120 BPM 4/4). Notes are counted on the full (expert) chart, so every difficulty has the same
+ranges. The engine then earns and deploys them like any phrase. Phrases on a real chart are never
+changed. **Deviation from the plastic-controllers spec:** a phrase pays out only when all its notes
+are hit (YARG's rule, which the engine keeps), not the spec's 90%.
 
 ## Controls screen
 
@@ -180,6 +192,25 @@ ff.openControls({ returnTo: 'plugin-build_a_band' });
   identical controller.
 - **`openControls`** shows the controls screen; its Back button goes to `returnTo` (default `home`)
   for that visit.
+
+**Events on `window.feedBack`.** Every renderer (pinned or not) emits its judgments and star power
+as `five_fret:hit`, `five_fret:miss`, `five_fret:overstrum`, `five_fret:sustain-end`,
+`five_fret:sp-phrase`, `five_fret:sp-ready`, `five_fret:sp-activate` and `five_fret:sp-end`. `detail`
+is the engine payload (as `drainEvents()`: `type`, and a note's own type as `noteType`) plus `canvas`
+(the highway canvas: filter by it), `controllerKey` (null with no controller), `partId`,
+`instrument`, and `score`, `combo`, `multiplier` and `spActive` from the engine state at the end of
+that frame (so several events in one frame share them). `resets` counts the times this renderer's
+scoring started over (the first frame, each seek or loop, a rebuilt session): a change from the last
+event's value means the score restarted. Events go out only when the bus has `emit`; a frame
+without events costs nothing, and a listener that throws never stops the draw.
+
+**Pause and leave in a band lane.** A pinned lane never pauses the song itself. Its controller's
+**Start** (the binding's `pause` action) emits `five_fret:band-pause` on the press, and holding
+**Back** (button 8 on standard-mapped pads; bindings have no back action, so button 8 for every
+controller whose binding leaves it free) for 1 s emits `five_fret:band-back-hold` once per hold (a
+release before 1 s cancels it). Both carry `detail { controllerKey, canvas }`, and both work while
+paused. Build-a-Band toggles pause and opens its leave prompt. Unpinned renderers keep Start →
+`window.togglePlay()`.
 
 ## Tests
 

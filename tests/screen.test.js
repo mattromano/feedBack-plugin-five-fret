@@ -177,7 +177,8 @@ function setup(t, opts) {
                     destroyed: false,
                     render(f) {
                         renders.push({ message: f.message, header: f.header, notes: f.notes.length, pressed: f.pressed.slice(),
-                            lefty: f.lefty, hits: f.state ? f.state.notesHit : null, now: f.now, scoreHidden: f.scoreHidden, canvas: cv });
+                            lefty: f.lefty, hits: f.state ? f.state.notesHit : null, now: f.now, scoreHidden: f.scoreHidden, canvas: cv,
+                            starPower: f.starPower });
                     },
                     resize() {},
                     destroy() { v.destroyed = true; },
@@ -1168,4 +1169,295 @@ test('init without webgl2 rejects readyPromise and does not throw', async (t) =>
     await assert.rejects(r.readyPromise, /webgl2 unavailable/);
     assert.doesNotThrow(() => r.draw({ currentTime: 1 }));
     assert.doesNotThrow(() => r.destroy());
+});
+
+// ── Band events on core's bus (five_fret:*) ──────────────────────────────────────────
+
+// Every five_fret:<judgment / star power / band> emit, in order, as { name, detail }.
+const BAND_EVENT = /^five_fret:(hit|miss|overstrum|sustain-end|sp-phrase|sp-ready|sp-activate|sp-end|band-pause|band-back-hold)$/;
+function recordBandEvents(env) {
+    const seen = [];
+    const emit = env.bus.emit;
+    env.bus.emit = (name, detail) => {
+        if (BAND_EVENT.test(name)) seen.push({ name, detail });
+        return emit(name, detail);
+    };
+    return seen;
+}
+const named = (seen, name) => seen.filter((e) => e.name === name);
+// Draw from `from` to `to` (inclusive), a frame at a time.
+function drawTo(r, ff, from, to, extra) {
+    for (let x = from; x < to; x += FRAME) r.draw(bundleAt(x, ff, extra));
+    r.draw(bundleAt(to, ff, extra));
+}
+async function pinnedLane(env, extra) {
+    const cv = fakeElement('canvas');
+    env.win.feedBackFiveFret.setLane(cv, lane(Object.assign({ difficulty: 'expert', lefty: false }, extra)));
+    return { cv, r: await startedOn(env, cv) };
+}
+
+test('a hit emits five_fret:hit with canvas, controllerKey, points, score, combo, multiplier, spActive', async (t) => {
+    const env = setup(t);
+    const seen = recordBandEvents(env);
+    const { cv, r } = await pinnedLane(env);
+    const ff = parts();
+    drawTo(r, ff, 0.8, 1);
+    env.gi.button(6, true);    // green (gamepad mode: the press hits)
+    r.draw(bundleAt(1 + FRAME, ff));
+    const hits = named(seen, 'five_fret:hit');
+    assert.equal(hits.length, 1);
+    const d = hits[0].detail;
+    assert.equal(d.canvas, cv);
+    assert.equal(d.controllerKey, 'Xbox#1');
+    assert.equal(d.partId, 'lead');
+    assert.equal(d.instrument, 'guitar');
+    assert.equal(d.points, 50);
+    assert.equal(d.type, 'hit');
+    assert.equal(d.noteType, 'strum');
+    const st = env.win.feedBackFiveFret.getInstanceState(cv);
+    assert.equal(d.score, st.score);
+    assert.equal(d.combo, 1);
+    assert.equal(d.multiplier, 1);
+    assert.equal(d.spActive, false);
+    assert.equal(typeof d.resets, 'number');
+    // An unpinned renderer emits too, with its claimed controller's key.
+    const env2 = setup(t);
+    const seen2 = recordBandEvents(env2);
+    const cv2 = fakeElement('canvas');
+    const r2 = await startedOn(env2, cv2);
+    drawTo(r2, ff, 0.8, 1);
+    env2.gi.button(6, true);
+    env2.gi.button(13, true);
+    r2.draw(bundleAt(1 + FRAME, ff));
+    const h2 = named(seen2, 'five_fret:hit');
+    assert.equal(h2.length, 1);
+    assert.equal(h2[0].detail.canvas, cv2);
+    assert.equal(h2[0].detail.controllerKey, 'Xbox#1');
+});
+
+test('a missed note emits five_fret:miss; an overstrum emits five_fret:overstrum', async (t) => {
+    const env = setup(t);
+    const seen = recordBandEvents(env);
+    const r = await started(env);   // unpinned, standard pad: gamepad mode on by kind, unless set off
+    r.applySetting('gamepadMode', false);
+    const ff = parts();
+    drawTo(r, ff, 0, 1.5);
+    env.gi.button(13, true);   // strum with no note near
+    env.gi.button(13, false);
+    drawTo(r, ff, 1.5 + FRAME, 2.5);
+    const over = named(seen, 'five_fret:overstrum');
+    assert.equal(over.length, 1);
+    const misses = named(seen, 'five_fret:miss');
+    assert.equal(misses.length, 2);   // the notes at 1 and 2
+    assert.equal(misses[0].detail.combo, 0);
+    assert.equal(misses[0].detail.partId, 'lead');
+});
+
+test('star power activation emits five_fret:sp-activate', async (t) => {
+    const env = setup(t);
+    const seen = recordBandEvents(env);
+    const { cv, r } = await pinnedLane(env);
+    // Two one-note phrases fill half the bar.
+    const ff = { lead: { partId: 'lead', name: 'Lead', instrument: 'guitar', sourceKind: 'chart',
+        notes: [{ t: 1, f: G }, { t: 2, f: G }, { t: 3, f: G }], levels: {},
+        starPower: [{ start_time: 0.9, end_time: 1.1 }, { start_time: 1.9, end_time: 2.1 }], solos: [] } };
+    drawTo(r, ff, 0.5, 1);
+    env.gi.button(6, true);
+    r.draw(bundleAt(1 + FRAME, ff));
+    env.gi.button(6, false);
+    drawTo(r, ff, 1 + 2 * FRAME, 2);
+    env.gi.button(6, true);
+    r.draw(bundleAt(2 + FRAME, ff));
+    env.gi.button(6, false);
+    assert.equal(named(seen, 'five_fret:sp-phrase').length, 2);
+    assert.equal(named(seen, 'five_fret:sp-ready').length, 1);
+    env.gi.button(3, true);   // star power (Y)
+    r.draw(bundleAt(2 + 2 * FRAME, ff));
+    const act = named(seen, 'five_fret:sp-activate');
+    assert.equal(act.length, 1);
+    assert.equal(act[0].detail.canvas, cv);
+    assert.equal(act[0].detail.spActive, true);
+    assert.equal(act[0].detail.multiplier, 2);
+});
+
+test('no events: nothing emitted, no state read', async (t) => {
+    const env = setup(t);
+    // Count session.state() reads: the HUD's frame.state is the only one per draw, events or not.
+    let reads = 0;
+    const createSession = S.createSession;
+    env.win.FiveFretSession = Object.assign({}, S, {
+        createSession(o) {
+            const s = createSession(o);
+            const state = s.state;
+            s.state = () => { reads++; return state(); };
+            return s;
+        },
+    });
+    const seen = recordBandEvents(env);
+    const { r } = await pinnedLane(env);
+    const ff = parts();
+    r.draw(bundleAt(0, ff));
+    reads = 0;
+    const n0 = env.renders.length;
+    drawTo(r, ff, FRAME, 0.5);   // nothing to judge
+    assert.equal(seen.length, 0);
+    assert.ok(env.renders.length - n0 > 20);
+    assert.equal(reads, env.renders.length - n0);
+    // A draw with events still reads state once.
+    drawTo(r, ff, 0.5 + FRAME, 1);
+    env.gi.button(6, true);
+    reads = 0;
+    r.draw(bundleAt(1 + FRAME, ff));
+    assert.equal(named(seen, 'five_fret:hit').length, 1);
+    assert.equal(reads, 1);
+    // A bus that cannot emit: draws go on, nothing to emit to.
+    const env2 = setup(t);
+    delete env2.win.feedBack.emit;
+    const { cv: cv2, r: r2 } = await pinnedLane(env2);
+    drawTo(r2, ff, 0.8, 1);
+    env2.gi.button(6, true);
+    assert.doesNotThrow(() => r2.draw(bundleAt(1 + FRAME, ff)));
+    assert.equal(env2.win.feedBackFiveFret.getInstanceState(cv2).notesHit, 1);
+});
+
+test('a throwing listener doesn\'t stop drawing', async (t) => {
+    const env = setup(t);
+    const seen = recordBandEvents(env);
+    env.bus.on('five_fret:hit', () => { throw new Error('listener'); });
+    const { r } = await pinnedLane(env);
+    const ff = parts();
+    drawTo(r, ff, 0.8, 1);
+    env.gi.button(6, true);
+    const n = env.renders.length;
+    assert.doesNotThrow(() => r.draw(bundleAt(1 + FRAME, ff)));
+    assert.equal(env.renders.length, n + 1);   // the frame was still drawn
+    env.gi.button(6, false);
+    drawTo(r, ff, 1 + 2 * FRAME, 2.5);         // the note at 2 (red) is missed: later events still go
+    assert.equal(named(seen, 'five_fret:hit').length, 1);
+    assert.equal(named(seen, 'five_fret:miss').length, 1);
+});
+
+test('events carry resets: a seek and a session rebuild each raise it', async (t) => {
+    const env = setup(t);
+    const seen = recordBandEvents(env);
+    const { cv, r } = await pinnedLane(env);
+    const ff = parts();
+    const hitAt1 = () => {
+        drawTo(r, ff, 0.8, 1);
+        env.gi.button(6, true);
+        r.draw(bundleAt(1 + FRAME, ff));
+        env.gi.button(6, false);
+        const h = named(seen, 'five_fret:hit');
+        return h[h.length - 1].detail.resets;
+    };
+    const a = hitAt1();
+    drawTo(r, ff, 1 + 2 * FRAME, 1.2);
+    const b = hitAt1();             // drawing 0.8 after 1.2 is a seek back
+    assert.ok(b > a);
+    env.win.feedBackFiveFret.setDifficulty('easy', cv);   // a rebuilt session (score 0 again)
+    drawTo(r, ff, 1 + 2 * FRAME, 1.2);
+    const c = hitAt1();
+    assert.ok(c > b);
+});
+
+// ── Band pause and leave (Ruling 7) ───────────────────────────────────────────────────
+
+test('a pinned lane\'s Start emits five_fret:band-pause and does not toggle play', async (t) => {
+    const env = setup(t);
+    const seen = recordBandEvents(env);
+    const { cv, r } = await pinnedLane(env);
+    r.draw(bundleAt(0, parts()));
+    env.gi.button(9, true);
+    env.gi.button(9, false);
+    assert.equal(env.win.togglePlays, 0);
+    const p = named(seen, 'five_fret:band-pause');
+    assert.equal(p.length, 1);   // the press, not the release
+    assert.deepEqual(p[0].detail, { controllerKey: 'Xbox#1', canvas: cv });
+    // Paused too (Build-a-Band resumes on it).
+    r.draw(bundleAt(0, parts(), { isPlaying: false }));
+    env.gi.button(9, true);
+    assert.equal(named(seen, 'five_fret:band-pause').length, 2);
+    assert.equal(env.win.togglePlays, 0);
+});
+
+test('holding Back 1 s on a pinned lane emits band-back-hold once; a shorter hold does not', async (t) => {
+    const env = setup(t);
+    const seen = recordBandEvents(env);
+    const { cv, r } = await pinnedLane(env);
+    const ff = parts();
+    const back = (down, ago) => env.gi.emit({ type: 'button', index: 8, value: down ? 1 : 0, pressed: down,
+        t: performance.now() / 1000 - (ago || 0) });
+    r.draw(bundleAt(0, ff));
+    // Held for 0.5 s, then let go: nothing.
+    back(true, 0.5);
+    r.draw(bundleAt(FRAME, ff));
+    back(false);
+    r.draw(bundleAt(2 * FRAME, ff));
+    assert.equal(named(seen, 'five_fret:band-back-hold').length, 0);
+    // Held for 1 s (paused here): one event, however long it stays down.
+    back(true, 1.05);
+    r.draw(bundleAt(2 * FRAME, ff, { isPlaying: false }));
+    r.draw(bundleAt(2 * FRAME, ff, { isPlaying: false }));
+    const held = named(seen, 'five_fret:band-back-hold');
+    assert.equal(held.length, 1);
+    assert.deepEqual(held[0].detail, { controllerKey: 'Xbox#1', canvas: cv });
+    back(false);
+    r.draw(bundleAt(2 * FRAME, ff));
+    assert.equal(named(seen, 'five_fret:band-back-hold').length, 1);
+    // A new hold fires again.
+    back(true, 1.05);
+    r.draw(bundleAt(3 * FRAME, ff));
+    assert.equal(named(seen, 'five_fret:band-back-hold').length, 2);
+    back(false);
+    // An unpinned renderer: Back does nothing.
+    const env2 = setup(t);
+    const seen2 = recordBandEvents(env2);
+    const r2 = await started(env2);
+    r2.draw(bundleAt(0, ff));
+    env2.gi.emit({ type: 'button', index: 8, value: 1, pressed: true, t: performance.now() / 1000 - 1.05 });
+    r2.draw(bundleAt(FRAME, ff));
+    assert.equal(seen2.length, 0);
+    // A binding that uses button 8 for an action (star power on a guitar's Select): no back-hold.
+    const env3 = setup(t, { pads: [{ id: 'Guitar', mapping: '' }] });
+    P.saveBinding('Guitar#1', { kind: 'guitar', map: Object.assign({}, GUITAR_MAP, { star_power: { type: 'button', index: 8 } }) });
+    const seen3 = recordBandEvents(env3);
+    const { r: r3 } = await pinnedLane(env3, { controllerKey: 'Guitar#1' });
+    r3.draw(bundleAt(0, ff));
+    env3.gi.emit({ type: 'button', index: 8, value: 1, pressed: true, t: performance.now() / 1000 - 1.05 });
+    r3.draw(bundleAt(FRAME, ff));
+    assert.equal(named(seen3, 'five_fret:band-back-hold').length, 0);
+});
+
+test('an unpinned renderer\'s Start still toggles play', async (t) => {
+    const env = setup(t);
+    const seen = recordBandEvents(env);
+    const r = await started(env);
+    r.draw(bundleAt(0, parts()));
+    env.gi.button(9, true);
+    env.gi.button(9, false);
+    assert.equal(env.win.togglePlays, 1);
+    assert.equal(named(seen, 'five_fret:band-pause').length, 0);
+    // A cleared lane is unpinned again.
+    const env2 = setup(t);
+    const { cv, r: r2 } = await pinnedLane(env2);
+    env2.win.feedBackFiveFret.clearLane(cv);
+    r2.draw(bundleAt(0, parts()));
+    env2.gi.button(9, true);
+    assert.equal(env2.win.togglePlays, 1);
+});
+
+test('an auto part draws and plays star power phrases from the song\'s sections', async (t) => {
+    const env = setup(t);
+    const r = await started(env);
+    const notes = [];
+    for (let x = 0; x < 16; x += 0.5) notes.push({ t: x, f: G });
+    const auto = { gen: { partId: 'gen', name: 'Lead', instrument: 'guitar', sourceKind: 'auto', notes, levels: {}, starPower: [], solos: [] } };
+    // No sections yet: no phrases. Sections arrive: the session is rebuilt with one (no beats: 2 s measures).
+    r.draw(bundleAt(0, auto, { sections: [] }));
+    assert.deepEqual(env.last().starPower, []);
+    r.draw(bundleAt(FRAME, auto, { sections: [{ time: 0, name: 'Intro' }] }));
+    assert.deepEqual(env.last().starPower, [{ start_time: 12, end_time: 16 }]);
+    // A chart part keeps its own (none here), whatever the sections.
+    r.draw(bundleAt(2 * FRAME, parts(), { sections: [{ time: 0, name: 'Intro' }] }));
+    assert.deepEqual(env.last().starPower, []);
 });
