@@ -54,10 +54,11 @@
  *
  * Deviations from YARG:
  *  1. Gamepad mode (opts.gamepadMode, Clone Hero's rule; a separate hit path, not in YARG): strum inputs
- *     are ignored. Whenever the set of held frets changes (press or release), the first unhit note is hit
- *     if it is inside its hit window and the held frets match it: chords exactly, single notes with
- *     YARG's anchoring rule (lower frets may be held). Note type (strum/HOPO/tap) does not matter. Open
- *     notes are hit only by pressing the 'open' action. A press or release that matches nothing is
+ *     are ignored. Only presses count: whenever a fret goes down, the first unhit note is hit if it is
+ *     inside its hit window and the held frets then match it: chords exactly (so a chord is hit when its
+ *     last fret goes down), single notes with YARG's anchoring rule (lower frets may be held). Releases
+ *     never hit. Note type (strum/HOPO/tap) does not matter. Open notes are hit only by pressing the
+ *     'open' action with no frets held. A press or release that matches nothing is
  *     ignored (no overstrum, no ghost input); a note is missed only when its window passes.
  *  2. Time model: YARG queues inputs and runs in chart ticks. This engine uses seconds and runs input()
  *     and update() immediately. Times earlier than the engine clock are clamped forward, as YARG's
@@ -358,7 +359,7 @@
         this.frontEndExpireTime = 0;
 
         // Gamepad mode (deviation 1): what changed since the last hit-logic pass.
-        this.gamepadFretsChanged = false;
+        this.gamepadFretsPressed = false;
         this.gamepadOpenPressed = false;
 
         this.isWaitCountdownActive = false;
@@ -486,6 +487,9 @@
             this._updateStarPower();
             this._updateHitLogic(time);
         } while (this.reRunHitLogic && ++passes < MAX_LOOP_PASSES);
+        if (this.reRunHitLogic && typeof console !== 'undefined' && console.warn) {
+            console.warn('[FiveFretEngine] hit-logic loop stopped after ' + MAX_LOOP_PASSES + ' passes at', time);
+        }
     };
 
     // RunQueuedUpdates: run the engine at every queued time before `time`, earliest first.
@@ -557,7 +561,8 @@
             // No other frets are held: enable the "open fret"; else disable it.
             if ((this.effectiveButtonMask & ~OPEN_MASK) === 0) this.effectiveButtonMask |= OPEN_MASK;
             else this.effectiveButtonMask &= ~OPEN_MASK;
-            if (this.effectiveButtonMask !== before) this.gamepadFretsChanged = true;
+            // Gamepad mode (deviation 1) hits only on a fret going down, never on a release.
+            if (value && this.effectiveButtonMask !== before) this.gamepadFretsPressed = true;
         }
     };
 
@@ -629,7 +634,7 @@
         this.hasStrummed = false;
         this.hasFretted = false;
         this.isFretPress = false;
-        this.gamepadFretsChanged = false;
+        this.gamepadFretsPressed = false;
         this.gamepadOpenPressed = false;
     };
 
@@ -690,7 +695,9 @@
             const note = this.notes[this.noteIndex];
             if (this._windowState(note) === 'in') {
                 const open = note.mask === OPEN_MASK;
-                if (open ? this.gamepadOpenPressed : (this.gamepadFretsChanged && this._gamepadMatches(note))) {
+                // The open button hits an open note only with no frets held, as a strum does in strum mode.
+                const openHit = this.gamepadOpenPressed && (this.effectiveButtonMask & FRET_MASK) === 0;
+                if (open ? openHit : (this.gamepadFretsPressed && this._gamepadMatches(note))) {
                     this._hitNote(note);
                 }
             }

@@ -381,6 +381,38 @@ test('gamepad mode: open button hits an open note', () => {
     assert.equal(e.noteState(1), 'hit');
 });
 
+test('gamepad mode: release to a lower fret does not hit a single note', () => {
+    const e = engine([{ t: 1, f: R }], GP);
+    press(e, 0.5, 'red');
+    press(e, 0.5, 'yellow');
+    release(e, 1, 'yellow'); // red + nothing above: matches, but a release never hits
+    assert.equal(e.noteState(0), null);
+    release(e, 1.01, 'red');
+    press(e, 1.02, 'red');   // pressing again does
+    assert.equal(e.noteState(0), 'hit');
+});
+
+test('gamepad mode: releasing an extra fret does not hit a chord', () => {
+    const e = engine([{ t: 1, f: G | R | Y }], GP);
+    for (const f of ['green', 'red', 'yellow', 'blue']) press(e, 0.5, f);
+    release(e, 1, 'blue'); // exactly the chord now, by a release
+    assert.equal(e.noteState(0), null);
+    release(e, 1.01, 'yellow');
+    press(e, 1.02, 'yellow'); // the last chord fret goes down
+    assert.equal(e.noteState(0), 'hit');
+});
+
+test('gamepad mode: open button hits an open note only with no frets held', () => {
+    const e = engine([{ t: 1, f: OPEN }], GP);
+    press(e, 0.9, 'red');
+    e.input(1, 'open', true);
+    assert.equal(e.noteState(0), null);
+    e.input(1.01, 'open', false);
+    release(e, 1.02, 'red');
+    e.input(1.03, 'open', true);
+    assert.equal(e.noteState(0), 'hit');
+});
+
 // ── API ──────────────────────────────────────────────────────────────────────
 
 test('getState has the Task 4 fields', () => {
