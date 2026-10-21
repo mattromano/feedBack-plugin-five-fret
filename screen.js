@@ -351,6 +351,10 @@
                     continue;
                 }
                 if (!session) continue;
+                // A band lane keeps its claim while paused (Ruling 7): nothing is judged then, so
+                // presses (and whammy movement) are dropped; releases still go through, so nothing
+                // stays held. The player presses again after resuming.
+                if (pin && !playing && a.value) continue;
                 // The session applies the input offset (to inputs and its clock), so none here.
                 const t = H.inputChartTime(lastChartTime, lastFrameT, ev.t, 0, playing);
                 if (Number.isFinite(t)) session.input(a.action, a.value, t);

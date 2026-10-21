@@ -601,6 +601,51 @@ test('a pinned lane keeps its claim while paused and before the part loads', asy
     assert.equal(env2.gi.owner(0), null);
 });
 
+test('a paused pinned lane is strummed and its combo and overstrums are unchanged', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    const cv = fakeElement('canvas');
+    api.setLane(cv, lane({ difficulty: 'expert', lefty: false }));
+    const r = await startedOn(env, cv);
+    const ff = parts();
+    for (let x = 0.8; x < 1; x += FRAME) r.draw(bundleAt(x, ff));
+    r.draw(bundleAt(1, ff));
+    env.gi.button(6, true);    // green
+    env.gi.button(13, true);   // strum: hits the note at 1
+    r.draw(bundleAt(1 + FRAME, ff));
+    env.gi.button(13, false);
+    env.gi.button(6, false);
+    const before = api.getInstanceState(cv);
+    assert.equal(before.combo, 1);
+    // Paused away from any note: a strum would be an overstrum.
+    for (let x = 1 + 2 * FRAME; x < 1.5; x += FRAME) r.draw(bundleAt(x, ff));
+    r.draw(bundleAt(1.5, ff));
+    r.draw(bundleAt(1.5, ff, { isPlaying: false }));
+    env.gi.button(13, true);
+    env.gi.button(13, false);
+    r.draw(bundleAt(1.5, ff, { isPlaying: false }));
+    // Paused on the note at 2 (red): a strum would hit it while the song is stopped.
+    for (let x = 1.5 + FRAME; x < 2; x += FRAME) r.draw(bundleAt(x, ff));
+    r.draw(bundleAt(2, ff, { isPlaying: false }));
+    env.gi.button(4, true);    // red
+    env.gi.button(13, true);
+    r.draw(bundleAt(2, ff, { isPlaying: false }));
+    const paused = api.getInstanceState(cv);
+    assert.equal(paused.combo, 1);
+    assert.equal(paused.overstrums, 0);
+    assert.equal(paused.notesHit, 1);
+    assert.deepEqual(env.last().pressed, [false, false, false, false, false]);   // presses not taken
+    assert.equal(env.gi.owner(0), 'five_fret');                                  // claim kept
+    // Releases still go through, and play resumes normally.
+    env.gi.button(4, false);
+    env.gi.button(13, false);
+    r.draw(bundleAt(2, ff));
+    env.gi.button(4, true);
+    env.gi.button(13, true);
+    r.draw(bundleAt(2 + FRAME, ff));
+    assert.equal(api.getInstanceState(cv).notesHit, 2);
+});
+
 test('a pinned lane plays its part exactly: Rhythm missing shows the no-chart message', async (t) => {
     const env = setup(t);
     const cv = fakeElement('canvas');
