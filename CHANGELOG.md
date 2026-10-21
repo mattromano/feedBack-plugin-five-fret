@@ -39,3 +39,10 @@ All notable changes to the 5-Fret plugin. The format follows
 - The renderer picks up bindings and offsets saved mid-session (`five_fret:bindings-changed`,
   `five_fret:offset-changed`) and lets its controller go while the controls screen is open
   (`five_fret:controls-screen`).
+- Hat-switch bindings `{ type: 'axis', index, value, tolerance }` (tolerance 0.1): the setup recorder
+  records a hat axis by value, the mapper presses while the axis is within tolerance. A sign-less axis
+  in a rebind's used controls blocks both directions.
+- The controls screen lives in `assets/controls.js` (`window.FiveFretControls`); `screen.js` keeps the
+  open/close hook. Controller list changes add or remove only the changed cards.
+- The player's 5-Fret panel uses core's `bg-fb-card`, `text-fb-textDim`, `text-fb-primary` classes
+  (the bare `fb-*` names it used are not in core's CSS).

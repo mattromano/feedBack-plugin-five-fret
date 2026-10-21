@@ -21,6 +21,7 @@
 
     const PRESS_AT = 0.5;
     const RELEASE_AT = 0.3;
+    const HAT_TOLERANCE = 0.1;   // a hat binding's default match window around its value
 
     const BINDINGS_KEY = 'five_fret.bindings.v1';
     const SETTINGS_KEY = 'five_fret.settings.v1';
@@ -55,9 +56,15 @@
 
     // Reading of one event for one binding, or null if the event is not the binding's input.
     // Buttons read 0..1 (value, else the pressed flag); axes read their own direction (sign) or
-    // the absolute value when no sign is given.
+    // the absolute value when no sign is given. A hat-switch binding ({ type: 'axis', index, value,
+    // tolerance? }) reads 1 while the axis is within tolerance (default 0.1) of its value, else 0.
     function reading(spec, ev) {
         if (!spec || spec.type !== ev.type || spec.index !== ev.index) return null;
+        if (spec.type === 'axis' && Number.isFinite(spec.value)) {
+            const tol = Number.isFinite(spec.tolerance) && spec.tolerance > 0 ? spec.tolerance : HAT_TOLERANCE;
+            const raw = Number(ev.value);
+            return Number.isFinite(raw) && Math.abs(raw - spec.value) <= tol + 1e-9 ? 1 : 0;
+        }
         let v = Number(ev.value);
         if (!Number.isFinite(v)) v = ev.pressed ? 1 : 0;
         if (spec.type === 'axis') v = spec.sign ? v * (spec.sign < 0 ? -1 : 1) : Math.abs(v);
@@ -164,27 +171,44 @@
             'strum_down', 'strum_up', 'whammy', 'star_power', 'pause']),
     });
     const SETUP_AXIS_MOVE = 0.5;   // an axis counts once it is this far from rest
+    const AT_REST = 0.05;          // this close to rest counts as at rest
+    const FULL_SCALE = 0.15;       // this close to ±1 is a normal axis's full travel, not a hat value
 
-    // A control's identity: a button, or one direction of an axis (an axis can strum both ways).
-    function controlId(spec) {
-        return spec.type === 'axis' ? `axis:${spec.index}:${spec.sign < 0 ? -1 : 1}` : `button:${spec.index}`;
+    // A control's identities: a button, one direction of an axis (an axis can strum both ways), or
+    // one value of a hat axis. A sign-less axis binding (the standard whammy) is both directions.
+    function controlIds(spec) {
+        if (spec.type !== 'axis') return [`button:${spec.index}`];
+        if (Number.isFinite(spec.value)) return [`axis:${spec.index}:=${spec.value.toFixed(2)}`];
+        if (!spec.sign) return [`axis:${spec.index}:1`, `axis:${spec.index}:-1`];
+        return [`axis:${spec.index}:${spec.sign < 0 ? -1 : 1}`];
     }
 
     // Walks `actions`, taking for each the first new button press or an axis moving more than 0.5
     // from rest (recorded with its sign), and ignoring a control already used (by this walk or
     // opts.used). opts.rest = { [axisIndex]: restValue }; an axis with no rest given takes the first
-    // value it reports as its rest. Pure: feed(ev) -> { done, next, binding, recorded }, where
-    // binding is { map } once done (else null) and recorded is { action, spec } when ev recorded one.
+    // value it reports as its rest. A hat switch (an axis resting outside [-1, 1], or one that jumps
+    // from rest straight to a value short of full scale) is recorded by value instead:
+    // { type: 'axis', index, value, tolerance: 0.1 }, each direction its own control.
+    // Pure: feed(ev) -> { done, next, binding, recorded }, where binding is { map } once done (else
+    // null) and recorded is { action, spec } when ev recorded one.
     function createSetupRecorder(actions, opts) {
         const list = Array.isArray(actions) ? actions.slice() : [];
         const o = opts || {};
         const used = new Set();
-        if (Array.isArray(o.used)) for (const s of o.used) if (s && (s.type === 'button' || s.type === 'axis')) used.add(controlId(s));
+        if (Array.isArray(o.used)) {
+            for (const s of o.used) {
+                if (s && (s.type === 'button' || s.type === 'axis') && Number.isInteger(s.index)) {
+                    for (const id of controlIds(s)) used.add(id);
+                }
+            }
+        }
         const rest = Object.create(null);
         if (o.rest && typeof o.rest === 'object') {
             for (const k of Object.keys(o.rest)) if (Number.isFinite(o.rest[k])) rest[k] = o.rest[k];
         }
         const down = new Set();   // buttons held now
+        const last = Object.create(null);   // each axis's previous value
+        const hats = new Set();             // axes found to be hat switches
         const map = {};
         let i = 0;
 
@@ -193,9 +217,9 @@
             return { done, next: done ? null : list[i], binding: done ? { map: Object.assign({}, map) } : null, recorded };
         };
         function take(spec) {
-            const id = controlId(spec);
-            if (used.has(id)) return result(null);
-            used.add(id);
+            const ids = controlIds(spec);
+            if (ids.some((id) => used.has(id))) return result(null);
+            for (const id of ids) used.add(id);
             map[list[i]] = spec;
             const recorded = { action: list[i], spec };
             i++;
@@ -218,10 +242,22 @@
                 if (ev.type === 'axis') {
                     const v = Number(ev.value);
                     if (!Number.isFinite(v)) return result(null);
-                    if (!(ev.index in rest)) { rest[ev.index] = v; return result(null); }
-                    const d = v - rest[ev.index];
-                    if (i >= list.length || Math.abs(d) <= SETUP_AXIS_MOVE) return result(null);
-                    return take({ type: 'axis', index: ev.index, sign: d < 0 ? -1 : 1 });
+                    const k = ev.index;
+                    if (!(k in rest)) { rest[k] = v; last[k] = v; return result(null); }
+                    const r = rest[k];
+                    const prev = k in last ? last[k] : r;
+                    last[k] = v;
+                    if (!hats.has(k) && (Math.abs(r) > 1 + AT_REST
+                        || (Math.abs(prev - r) < AT_REST && Math.abs(v - prev) > SETUP_AXIS_MOVE
+                            && Math.abs(Math.abs(v) - 1) > FULL_SCALE))) hats.add(k);
+                    if (i >= list.length) return result(null);
+                    if (hats.has(k)) {
+                        if (Math.abs(v - r) < AT_REST) return result(null);
+                        return take({ type: 'axis', index: k, value: Math.round(v * 1000) / 1000, tolerance: HAT_TOLERANCE });
+                    }
+                    const d = v - r;
+                    if (Math.abs(d) <= SETUP_AXIS_MOVE) return result(null);
+                    return take({ type: 'axis', index: k, sign: d < 0 ? -1 : 1 });
                 }
                 return result(null);
             },

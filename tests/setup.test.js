@@ -70,6 +70,8 @@ test('axis recorded with sign', () => {
     const rec2 = P.createSetupRecorder(['whammy']);
     r = rec2.feed(axis(2, -0.98));
     assert.equal(r.done, false);
+    r = rec2.feed(axis(2, -0.6));
+    assert.equal(r.done, false);
     r = rec2.feed(axis(2, -0.2));
     assert.deepEqual(r.binding.map.whammy, { type: 'axis', index: 2, sign: 1 });
 });
@@ -115,4 +117,62 @@ test('calibration median ignores outliers', () => {
     assert.equal(P.calibrationOffset([1, 2], [1.4, 2.6]), null);
     assert.equal(P.calibrationOffset([], [1]), null);
     assert.equal(P.calibrationOffset(null, undefined), null);
+});
+
+// ── Hat-switch axes (one axis, a discrete value per direction) ──────────────────────
+
+test('hat switch: two directions on one axis recorded as strum_down and strum_up', () => {
+    // A hat resting outside [-1, 1] (1.286, as Chrome reports a centred hat): each direction is a value.
+    const rec = P.createSetupRecorder(['strum_down', 'strum_up']);
+    let r = rec.feed(axis(9, 1.286));    // its rest
+    assert.equal(r.next, 'strum_down');
+    r = rec.feed(axis(9, 0.143));
+    assert.deepEqual(r.recorded, { action: 'strum_down', spec: { type: 'axis', index: 9, value: 0.143, tolerance: 0.1 } });
+    rec.feed(axis(9, 1.286));
+    r = rec.feed(axis(9, 0.1429));       // the same direction again: already used
+    assert.equal(r.next, 'strum_up');
+    rec.feed(axis(9, 1.286));
+    r = rec.feed(axis(9, -1));
+    assert.equal(r.done, true);
+    assert.deepEqual(r.binding.map, {
+        strum_down: { type: 'axis', index: 9, value: 0.143, tolerance: 0.1 },
+        strum_up: { type: 'axis', index: 9, value: -1, tolerance: 0.1 },
+    });
+
+    // A hat resting inside [-1, 1]: a jump from rest straight to a value that is not full scale marks
+    // the axis as a hat, and its later directions are values too. A full-scale jump or a gradual move
+    // is a normal axis direction.
+    const rec2 = P.createSetupRecorder(['strum_down', 'strum_up', 'star_power', 'whammy'], { rest: { 4: 0, 5: 0, 2: 0 } });
+    r = rec2.feed(axis(4, -0.714));
+    assert.deepEqual(r.recorded.spec, { type: 'axis', index: 4, value: -0.714, tolerance: 0.1 });
+    rec2.feed(axis(4, 0));
+    r = rec2.feed(axis(4, 1));
+    assert.deepEqual(r.recorded.spec, { type: 'axis', index: 4, value: 1, tolerance: 0.1 });
+    r = rec2.feed(axis(5, 1));
+    assert.deepEqual(r.recorded.spec, { type: 'axis', index: 5, sign: 1 });
+    rec2.feed(axis(2, 0.3));
+    r = rec2.feed(axis(2, 0.8));
+    assert.deepEqual(r.recorded.spec, { type: 'axis', index: 2, sign: 1 });
+    assert.equal(r.done, true);
+});
+
+test('hat switch: the mapper presses while the axis is within tolerance of the value', () => {
+    const m = P.createMapper({ kind: 'guitar', map: {
+        strum_down: { type: 'axis', index: 9, value: 0.143, tolerance: 0.1 },
+        strum_up: { type: 'axis', index: 9, value: -1 },   // tolerance defaults to 0.1
+    } });
+    assert.deepEqual(m.map(axis(9, 0.143)), [{ action: 'strum_down', value: 1 }]);
+    assert.deepEqual(m.map(axis(9, 0.2)), []);                                   // still within 0.1
+    assert.deepEqual(m.map(axis(9, 1.286)), [{ action: 'strum_down', value: 0 }]);
+    assert.deepEqual(m.map(axis(9, -0.95)), [{ action: 'strum_up', value: 1 }]);
+    assert.deepEqual(m.map(axis(9, -0.714)), [{ action: 'strum_up', value: 0 }]);   // a diagonal
+    assert.deepEqual(m.map(axis(8, -1)), []);
+});
+
+test('a sign-less axis in used blocks both directions (rebinding around the standard whammy)', () => {
+    const rec = P.createSetupRecorder(['green'], { used: [{ type: 'axis', index: 2 }], rest: { 2: 0 } });
+    assert.equal(rec.feed(axis(2, -1)).recorded, null);
+    rec.feed(axis(2, 0));
+    assert.equal(rec.feed(axis(2, 1)).recorded, null);
+    assert.equal(rec.next, 'green');
 });

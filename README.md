@@ -6,7 +6,8 @@ song's 5-fret part with a game controller or a plastic guitar, judged and scored
 
 Status: in development. This version ships the scoring engine (`assets/engine.js`), controller
 profiles (`assets/profiles.js`), the tilted 3D highway view (`assets/highway3d.js`), the player
-renderer (`screen.js`, with `assets/session.js`) and the controls screen (`screen.html`).
+renderer (`screen.js`, with `assets/session.js`) and the controls screen (`screen.html`,
+`assets/controls.js`).
 
 ## Scoring engine
 
@@ -113,18 +114,26 @@ its buttons, axes and actions light up as you press them. For each controller:
 - **Set up as guitar** asks, in order, for green, red, yellow, blue, orange, strum down, strum up,
   whammy, star power and pause; **Set up as gamepad** asks for the standard gamepad profile's
   actions. Each takes the first new button press, or an axis moving more than 0.5 from rest
-  (recorded with its direction, so one axis can strum both ways). A control already used is
-  ignored. **Skip** leaves an action unbound; **Cancel** saves nothing.
+  (recorded with its direction, so one axis can strum both ways). A hat switch (an axis resting
+  outside -1..1, or jumping from rest straight to a value short of full scale) is recorded by value,
+  `{ type: 'axis', index, value, tolerance: 0.1 }`: the action is pressed while the axis is within
+  the tolerance of that value, so a hat strum bar binds up and down on one axis. A control already
+  used is ignored. **Skip** leaves an action unbound; **Cancel** saves nothing.
 - **Rebind** one action: pick it, then press the button or move the axis. The other actions stay.
 - **Input offset** in ms (−200 to 200, step 5), per controller.
 - **Calibrate** plays 12 clicks (it is the only thing on the screen that makes sound, and only when
   clicked): strum along, and the offset is set to the median of strum-minus-nearest-click, ignoring
   pairs more than 150 ms apart.
 
+Controllers that connect, disconnect, or are claimed or released by another plugin get their
+cards added or removed; the others keep their claim, setup and calibration. The screen's code is
+`assets/controls.js` (`window.FiveFretControls.create(...)`), loaded with the other assets when the
+screen opens.
+
 Bindings are saved to `five_fret.bindings.v1` and offsets to `five_fret.settings.v1`. Each save is
 announced on `window.feedBack` (`five_fret:bindings-changed`, `five_fret:offset-changed`), and a
-running renderer re-reads its binding and offset, so a plastic guitar set up mid-song is claimed
-straight away. The pure helpers are in `assets/profiles.js`: `SETUP_ACTIONS`,
+running renderer re-reads its binding or offset when the event names its controller, so a
+plastic guitar set up mid-song is claimed straight away. The pure helpers are in `assets/profiles.js`: `SETUP_ACTIONS`,
 `createSetupRecorder(actions, { used?, rest? })` and `calibrationOffset(clickTimes, strumTimes)`.
 
 ## Tests

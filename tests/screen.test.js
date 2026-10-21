@@ -10,6 +10,7 @@ const path = require('node:path');
 const E = require(path.join(__dirname, '..', 'assets', 'engine.js'));
 const P = require(path.join(__dirname, '..', 'assets', 'profiles.js'));
 const S = require(path.join(__dirname, '..', 'assets', 'session.js'));
+const C = require(path.join(__dirname, '..', 'assets', 'controls.js'));
 
 const FRAME = 1 / 60;
 
@@ -169,7 +170,7 @@ function setup(t, opts) {
     };
     const shown = [];
     const win = {
-        FiveFretEngine: E, FiveFretProfiles: P, FiveFretSession: S, FiveFretLayout: {},
+        FiveFretEngine: E, FiveFretProfiles: P, FiveFretSession: S, FiveFretLayout: {}, FiveFretControls: C,
         FiveFretHighway3D: {
             createView() {
                 const v = {
@@ -238,6 +239,15 @@ test('init claims the gamepad, mounts the panel, and draws the picked part', asy
     const r = await started(env);
     assert.equal(env.gi.claims, 1);
     assert.equal(env.slot.children.length, 1);
+    // Only classes core's tailwind.min.css has: bg-fb-card, text-fb-textDim, ... never a bare fb-* token.
+    const panel = env.slot.children[0];
+    assert.match(panel.className, /(^|\s)bg-fb-card(\s|$)/);
+    const bare = [];
+    (function walk(n) {
+        for (const c of String(n.className || '').split(/\s+/)) if (/^fb-/.test(c)) bare.push(c);
+        for (const k of n.children || []) walk(k);
+    })(panel);
+    assert.deepEqual(bare, []);
     r.draw(bundleAt(0, ff));
     assert.equal(env.last().notes, 2);
     assert.equal(env.last().message, null);
@@ -368,6 +378,14 @@ test('a binding saved mid-session is picked up by the renderer (five_fret:bindin
     r.draw(bundleAt(0, ff));
     assert.equal(env.last().header, 'Lead · GAMEPAD · Expert');
     P.saveBinding('Xbox#1', { kind: 'guitar', map: GUITAR_MAP });
+    env.gi.button(6, true);    // green held (standard map)
+    // Another controller's change leaves this one alone: same binding, held fret kept.
+    env.bus.emit('five_fret:bindings-changed', { controllerKey: 'Other#1' });
+    env.bus.emit('five_fret:offset-changed', { controllerKey: 'Other#1', offsetMs: 50 });
+    r.draw(bundleAt(FRAME / 2, ff));
+    assert.equal(env.last().header, 'Lead · GAMEPAD · Expert');
+    assert.deepEqual(env.last().pressed, [true, false, false, false, false]);
+    env.gi.button(6, false);
     env.bus.emit('five_fret:bindings-changed', { controllerKey: 'Xbox#1' });
     r.draw(bundleAt(FRAME, ff));
     assert.equal(env.last().header, 'Lead · GUITAR · Expert');
@@ -415,6 +433,11 @@ test('controls screen claims while open; the renderer yields and takes the contr
     assert.equal(find(env.list, 'action-green').dataset.on, '1');
     env.gi.button(6, false);
     assert.equal(find(env.list, 'action-green').dataset.on, '0');
+    // An axis light's rest is its first value (no browser pad state here): resting at -1 is off.
+    env.gi.axis(3, -1);
+    assert.equal(find(env.list, 'raw-axis-3').dataset.on, '0');
+    env.gi.axis(3, 0);
+    assert.equal(find(env.list, 'raw-axis-3').dataset.on, '1');
     await leaveControls(env);
     assert.equal(env.gi.owner(0), 'five_fret');
     assert.equal(env.list.children.length, 0);
@@ -570,11 +593,15 @@ test('calibrate plays clicks only after a click, with a visible note, and sets t
     assert.equal(note.hidden, false);
     find(env.list, 'calibrate').fire('click');
     assert.equal(env.audio.contexts.length, 1);
-    assert.equal(env.audio.clicks, 12);
+    // The clicks are scheduled once the context has resumed, from its clock then.
+    assert.equal(env.audio.clicks, 0);
     const ctx = env.audio.contexts[0];
-    // Strum 30 ms after each heard click (context time 1.0 + 0.6 i, heard at perfZero + that).
+    ctx.currentTime = 5;
+    await tick();
+    assert.equal(env.audio.clicks, 12);
+    // Strum 30 ms after each heard click (context time 5 + 1.0 + 0.6 i, heard at perfZero + that).
     for (let i = 0; i < 12; i++) {
-        const at = ctx.perfZero + 1.0 + 0.6 * i + (i === 5 ? 0.4 : 0.03);   // one stray strum
+        const at = ctx.perfZero + 5 + 1.0 + 0.6 * i + (i === 5 ? 0.4 : 0.03);   // one stray strum
         env.gi.emit({ type: 'button', index: 13, value: 1, pressed: true, t: at });
         env.gi.emit({ type: 'button', index: 13, value: 0, pressed: false, t: at + 0.05 });
     }
@@ -586,11 +613,62 @@ test('calibrate plays clicks only after a click, with a visible note, and sets t
 
     // Leaving mid-calibration stops the clicks and saves nothing.
     find(env.list, 'calibrate').fire('click');
+    await tick();
     assert.equal(env.audio.contexts.length, 2);
     await leaveControls(env);
     assert.equal(env.audio.contexts[1].closed, true);
     t.mock.timers.tick(20000);
     assert.equal(P.loadSettings().offsetMs['Xbox#1'], 30);
+});
+
+test('controllers coming and going do not cancel setup or calibration on the others', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const env = setup(t, { pads: [{ id: 'Guitar', mapping: '' }] });
+    await openControls(env);
+    const guitar = findAll(env.list, 'card')[0];
+    find(guitar, 'setup-guitar').fire('click');
+    env.gi.button(0, true);
+    assert.match(find(guitar, 'prompt-text').textContent, /Red/);
+    // A second controller arrives: it gets a card; the guitar keeps its claim, card and setup.
+    env.gi.pads.push({ id: 'Xbox', mapping: 'standard' });
+    env.gi.change('connect', 1);
+    let cards = findAll(env.list, 'card');
+    assert.equal(cards.length, 2);
+    assert.equal(cards[0], guitar);
+    assert.equal(env.gi.claims, 2);
+    assert.equal(env.gi.releases, 0);
+    assert.equal(env.gi.owner(1), 'five_fret.controls');
+    assert.match(find(guitar, 'prompt-text').textContent, /Red/);
+    // Calibrate the pad while the guitar setup goes on.
+    const pad = cards[1];
+    find(pad, 'calibrate').fire('click');
+    await tick();
+    const ctx = env.audio.contexts[0];
+    // Another plugin claiming and releasing something else changes nothing here.
+    env.gi.change('claim', 7);
+    env.gi.change('release', 7);
+    assert.equal(ctx.closed, false);
+    for (let b = 1; b < 5; b++) env.gi.button(b, true);
+    for (let k = 0; k < 5; k++) find(guitar, 'skip').fire('click');
+    assert.deepEqual(Object.keys(P.loadBindings()['Guitar#1'].map), ['green', 'red', 'yellow', 'blue', 'orange']);
+    // The pad leaves: its card goes, its claim is released and its clicks stop; the guitar stays.
+    env.gi.pads.pop();
+    env.gi.change('disconnect', 1);
+    cards = findAll(env.list, 'card');
+    assert.deepEqual(cards, [guitar]);
+    assert.equal(ctx.closed, true);
+    assert.equal(env.gi.owner(1), null);
+    assert.equal(env.gi.owner(0), 'five_fret.controls');
+    assert.equal(env.gi.releases, 1);
+    // A controller another plugin held becomes free: its card is replaced by a claimed one.
+    env.gi.pads.push({ id: 'Drumkit', mapping: '' });
+    env.gi.claim(1, 'drums');
+    assert.match(find(findAll(env.list, 'card')[1], 'status').textContent, /In use by drums/);
+    env.gi.claim(1, 'drums').release();
+    cards = findAll(env.list, 'card');
+    assert.equal(cards.length, 2);
+    assert.equal(env.gi.owner(1), 'five_fret.controls');
+    assert.ok(find(cards[1], 'setup-guitar'));
 });
 
 // ── Factory ───────────────────────────────────────────────────────────────────────
