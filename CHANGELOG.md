@@ -6,6 +6,7 @@ All notable changes to the 5-Fret plugin. The format follows
 ## [0.1.0] - Unreleased
 
 ### Added
+- "Show auto charts" setting (`showAutoCharts` in `five_fret.settings.v1`, default off, checkbox on the settings page). Auto-generated parts (`sourceKind: 'auto'`) are hidden by `pickPart` unless it is on; a song with only auto parts shows the no-part status. `pickPart` takes `opts` (`{ exact?, showAuto? }`; `exact` is accepted and ignored for now). Renderers re-read the setting on `five_fret:settings-changed`.
 - Plugin scaffold: `plugin.json` (visualization, `gamepad-input` requester), licence files, CI.
 - `assets/engine.js`: JavaScript port of YARG.Core's five-fret guitar engine (LGPL-3.0), part 1:
   strums with strum leniency, HOPOs and taps with HOPO leniency and front end, chords and anchoring,

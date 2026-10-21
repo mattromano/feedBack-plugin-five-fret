@@ -177,7 +177,7 @@ test('saveSettings re-normalises bad patches and returns what was stored', () =>
     withStorage(memoryStorage(), () => {
         P.saveSettings({ offsetMs: { 'A#1': 10 } });
         let s = P.saveSettings({ offsetMs: null, lefty: 'yes', difficulty: 5, gamepadMode: 'x', part: null });
-        assert.deepEqual(s, { difficulty: 'expert', lefty: false, gamepadMode: null, offsetMs: { 'A#1': 10 }, part: 'auto' });
+        assert.deepEqual(s, { difficulty: 'expert', lefty: false, gamepadMode: null, offsetMs: { 'A#1': 10 }, part: 'auto', showAutoCharts: false });
         s = P.saveSettings({ offsetMs: [1, 2] });
         assert.deepEqual(s.offsetMs, { 'A#1': 10 });
         s = P.saveSettings({ offsetMs: { 'B#1': 'x', 'C#1': NaN, 'D#1': 7 } });
@@ -199,4 +199,16 @@ test('controllerKey rejects a missing id; malformed bindings are not used', () =
     const m = P.createMapper({ kind: 'guitar', map: { green: null, red: 'x', yellow: { type: 'button', index: 1 } } });
     assert.deepEqual(m.map(btn(1, 1)), [{ action: 'yellow', value: 1 }]);
     assert.deepEqual(m.map(btn(0, 1)), []);
+});
+
+test('settings default showAutoCharts false and coerces non-booleans', () => {
+    withStorage(memoryStorage(), () => {
+        assert.equal(P.loadSettings().showAutoCharts, false);
+        assert.equal(P.saveSettings({ showAutoCharts: 'yes' }).showAutoCharts, false);
+        assert.equal(P.saveSettings({ showAutoCharts: 1 }).showAutoCharts, false);
+        assert.equal(P.saveSettings({ showAutoCharts: true }).showAutoCharts, true);
+        assert.equal(P.loadSettings().showAutoCharts, true);
+        P.saveSettings({ lefty: true });
+        assert.equal(P.loadSettings().showAutoCharts, true);
+    });
 });

@@ -47,6 +47,7 @@
     // Bus events between the controls screen and the renderers (window.feedBack.emit / on).
     const EV_CONTROLS = 'five_fret:controls-screen';    // { open }: the screen claims controllers while open
     const EV_BINDINGS = 'five_fret:bindings-changed';   // { controllerKey }: a binding was saved
+    const EV_SETTINGS = 'five_fret:settings-changed';   // settings.html saved a setting (showAutoCharts)
     const EV_OFFSET = 'five_fret:offset-changed';       // { controllerKey, offsetMs }: an input offset was saved
     let _controlsOpen = false;   // renderers don't claim while the controls screen is open
     const EMPTY = Object.freeze([]);
@@ -244,7 +245,7 @@
         // This instance's own settings (splitscreen panels never share them). Seeded from
         // five_fret.settings.v1 once profiles.js has loaded; only the normal player's panel instance
         // writes them back (see applySetting).
-        let settings = { part: 'auto', difficulty: 'expert', lefty: false, gamepadMode: null, offsetMs: {} };
+        let settings = { part: 'auto', difficulty: 'expert', lefty: false, gamepadMode: null, offsetMs: {}, showAutoCharts: false };
         let pending = {};                  // applySetting before profiles.js loaded
 
         // Controller (handleInfo: its gamepad-input list() entry at claim time, for resolveBinding).
@@ -259,7 +260,7 @@
         let session = null;
         // The picked part, recomputed only when the parts object (identity or key count), the
         // arrangement name or the part setting changes.
-        const pick = { parts: null, count: -1, arrangement: null, setting: null, partId: null };
+        const pick = { parts: null, count: -1, arrangement: null, setting: null, showAuto: false, partId: null };
         const statusArgs = { hasParts: false, hasController: false, connected: false };
         // What the session was built from: rebuilt when any of these change (compared field by field,
         // so the steady state allocates nothing).
@@ -281,9 +282,10 @@
         function pickedPart(parts, arrangement) {
             const count = parts && typeof parts === 'object' ? countKeys(parts) : 0;
             if (pick.parts !== parts || pick.count !== count || pick.arrangement !== arrangement
-                || pick.setting !== settings.part) {
+                || pick.setting !== settings.part || pick.showAuto !== !!settings.showAutoCharts) {
                 pick.parts = parts; pick.count = count; pick.arrangement = arrangement; pick.setting = settings.part;
-                pick.partId = H.pickPart(parts, arrangement, settings.part);
+                pick.showAuto = !!settings.showAutoCharts;
+                pick.partId = H.pickPart(parts, arrangement, settings.part, { showAuto: pick.showAuto });
             }
             return pick.partId;
         }
@@ -427,6 +429,12 @@
             settings = Object.assign({}, settings, { offsetMs: P.loadSettings().offsetMs });
         }
 
+        // settings.html changed "Show auto charts": re-read it (the pick cache keys on it).
+        function onSettingsChanged() {
+            if (!P) return;
+            settings = Object.assign({}, settings, { showAutoCharts: P.loadSettings().showAutoCharts });
+        }
+
         // The controls screen saved a binding: re-resolve ours, or claim a controller set up just now.
         function onBindingsChanged(e) {
             if (!P) return;
@@ -489,7 +497,7 @@
             const bus = window.feedBack;
             if (!bus || typeof bus.on !== 'function' || typeof bus.off !== 'function') return;
             const pairs = [['highway:visibility', onVisibility], [EV_CONTROLS, onControlsScreen],
-                [EV_BINDINGS, onBindingsChanged], [EV_OFFSET, onOffsetChanged]];
+                [EV_BINDINGS, onBindingsChanged], [EV_OFFSET, onOffsetChanged], [EV_SETTINGS, onSettingsChanged]];
             for (const [name, fn] of pairs) {
                 try { if (on) bus.on(name, fn); else bus.off(name, fn); } catch (_) { /* ignore */ }
             }

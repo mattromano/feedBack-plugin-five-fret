@@ -9,3 +9,34 @@
         Open 5-Fret controls
     </button>
 </div>
+
+<!-- Show auto charts: written straight to localStorage (this page may load without profiles.js),
+     then announced on core's event bus so open renderers re-read it. -->
+<label class="flex items-start gap-3 mt-4 cursor-pointer">
+    <input type="checkbox" id="five-fret-show-auto" class="mt-1">
+    <span class="min-w-0">
+        <span class="text-sm">Show auto charts</span>
+        <span class="block text-fb-textDim text-xs">Generated from the guitar arrangement; not yet benchmarked to our pass line</span>
+    </span>
+</label>
+<script>
+(function () {
+    var KEY = 'five_fret.settings.v1';
+    var box = document.getElementById('five-fret-show-auto');
+    if (!box) return;
+    function read() {
+        try { var v = JSON.parse(localStorage.getItem(KEY)); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
+        catch (_) { return {}; }
+    }
+    box.checked = read().showAutoCharts === true;
+    box.addEventListener('change', function () {
+        var s = read();
+        s.showAutoCharts = box.checked;
+        try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (_) { /* storage unavailable */ }
+        var b = window.feedBack;
+        if (b && typeof b.emit === 'function') {
+            try { b.emit('five_fret:settings-changed', { showAutoCharts: box.checked }); } catch (_) { /* ignore */ }
+        }
+    });
+})();
+</script>
