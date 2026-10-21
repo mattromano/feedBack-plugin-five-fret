@@ -496,6 +496,40 @@ test('sustain drop ends sustain early', () => {
     assert.equal(e2.getState().score, 150);
 });
 
+test("noteState: 'held' while the note's sustain is active", () => {
+    const e = engine5([{ t: 1, f: G, l: 2 }, { t: 1, f: R, l: 2 }, { t: 5, f: Y }]);
+    const log = collect(e, ['sustain-end']);
+    press(e, 0.9, 'green');
+    press(e, 0.9, 'red');
+    strum(e, 1);
+    assert.equal(e.noteState(0), 'held');
+    assert.equal(e.noteState(1), 'held', 'a merged chord index reports the chord');
+    e.update(2);
+    assert.equal(e.noteState(0), 'held');
+    e.update(3.5);
+    assert.equal(log.length, 1);
+    assert.equal(e.noteState(0), 'hit', 'after the natural end');
+    assert.equal(e.noteState(1), 'hit');
+
+    // Released: still held inside the 25 ms drop leniency, 'hit' once it is dropped.
+    const e2 = engine5([{ t: 1, f: G, l: 2 }]);
+    press(e2, 0.9, 'green');
+    strum(e2, 1);
+    release(e2, 2, 'green');
+    e2.update(2.02);
+    assert.equal(e2.noteState(0), 'held', 'inside the drop leniency');
+    e2.update(2.1);
+    assert.equal(e2.noteState(0), 'hit', 'dropped');
+
+    // A note without a sustain is 'hit' straight away; a missed sustain is 'miss'.
+    const e3 = engine5([{ t: 1, f: G }, { t: 2, f: R, l: 1 }]);
+    press(e3, 0.9, 'green');
+    strum(e3, 1);
+    assert.equal(e3.noteState(0), 'hit');
+    e3.update(3);
+    assert.equal(e3.noteState(1), 'miss');
+});
+
 test('extended sustain: its fret is masked out for the next note and keeps scoring', () => {
     // Yellow sustains from 1 to 3 over a green note at 2: holding yellow above green would block a
     // single green note, but the extended sustain's fret is ignored when matching.

@@ -742,11 +742,20 @@
         };
     };
 
-    /** 'hit' | 'miss' | null for the chart note at index i (index into chart.notes). */
+    /**
+     * 'held' | 'hit' | 'miss' | null for the chart note at index i (index into chart.notes): 'held'
+     * while its sustain is active (from the hit until sustain-end, drop leniency included).
+     */
     Engine.prototype.noteState = function (i) {
         const note = this._bySrc.get(i);
         if (!note) return null;
-        return note.hit ? 'hit' : (note.missed ? 'miss' : null);
+        if (note.hit) {
+            for (let k = 0; k < this.activeSustains.length; k++) {
+                if (this.activeSustains[k].note === note) return 'held';
+            }
+            return 'hit';
+        }
+        return note.missed ? 'miss' : null;
     };
 
     /** Held frets as a mask (bit0 green .. bit4 orange). */

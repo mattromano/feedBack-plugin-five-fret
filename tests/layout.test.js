@@ -116,18 +116,6 @@ test('tailSegments: count and length cover the tail', () => {
     assert.equal(L.tailSegments(2, out), out);
 });
 
-test('sustainHeld: all of the mask pressed; open = nothing pressed', () => {
-    const P = (...on) => [0, 1, 2, 3, 4].map(i => on.includes(i));
-    assert.equal(L.sustainHeld(1, P(0)), true);
-    assert.equal(L.sustainHeld(1, P(0, 3)), true, 'extra frets do not drop a sustain');
-    assert.equal(L.sustainHeld(5, P(0)), false, 'chord needs both');
-    assert.equal(L.sustainHeld(5, P(0, 2)), true);
-    assert.equal(L.sustainHeld(0, P()), true, 'open sustain with nothing down');
-    assert.equal(L.sustainHeld(0, P(1)), false);
-    assert.equal(L.sustainHeld(2, null), false);
-    assert.equal(L.sustainHeld(0, null), true);
-});
-
 test('starFill: 0..5 stars with a fraction, 6 = gold', () => {
     assert.deepEqual(L.starFill(0), { full: 0, frac: 0, gold: false });
     assert.deepEqual(L.starFill(2.5), { full: 2, frac: 0.5, gold: false });

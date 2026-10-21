@@ -128,19 +128,6 @@
         return r;
     }
 
-    /**
-     * Whether a sustain is being held: every fret of its mask pressed (pressed: bool[5]); an open
-     * sustain (mask 0) is held with no frets down.
-     */
-    function sustainHeld(mask, pressed) {
-        const m = (mask | 0) & FRET_MASK;
-        for (let i = 0; i < 5; i++) {
-            const down = !!(pressed && pressed[i]);
-            if (m === 0 ? down : ((m >> i) & 1) && !down) return false;
-        }
-        return true;
-    }
-
     /** HUD stars from getState().stars (0..6, 6 = gold): whole stars, the next star's fraction, gold. */
     function starFill(stars, out) {
         const r = out || { full: 0, frac: 0, gold: false };
@@ -158,7 +145,7 @@
 
     return {
         TRACK, COLORS, FRET_MASK,
-        laneX, noteZ, gemKind, visibleWindow, rangeIndexAt, isDownbeat, wobbleX, tailSegments, sustainHeld,
+        laneX, noteZ, gemKind, visibleWindow, rangeIndexAt, isDownbeat, wobbleX, tailSegments,
         starFill, soloPercent,
     };
 });

@@ -5,7 +5,7 @@
  * A perspective guitar track in the classic tilted style of the plastic-guitar games: five lanes,
  * beat and measure lines, round gems in green / red / yellow / blue / orange (HOPOs with a white glow,
  * taps with a dark centre, open notes as a purple bar across the highway), sustain tails that wobble
- * while whammied, star power phrases as white/blue gems and a blue highway while star power is on,
+ * while held (engine 'held') and whammied, star power phrases as white/blue gems and a blue highway while star power is on,
  * solo sections as a band, fret buttons at the strike line lit by the held frets, hit gems that flash
  * and vanish and missed gems that dim. A 2D HUD canvas shows the header tag, AUTO CHART, score,
  * multiplier, streak, the star power bar, stars and the solo percent. No artwork from those games.
@@ -20,7 +20,8 @@
  * frame = { now, notes, beats, starPower, solos, pressed: bool[5], whammy, noteState(i), state,
  *           lefty, header, sourceKind, lookahead?, message? }
  *   now: chart time in seconds; notes: wire notes { t, f, l?, h?, tap? } sorted by t;
- *   noteState(i): 'hit' | 'miss' | null; state: engine getState(); header: "PART · INPUT · DIFFICULTY";
+ *   noteState(i): engine noteState ('held' while the sustain is active, 'hit', 'miss' or null);
+ *   state: engine getState(); header: "PART · INPUT · DIFFICULTY";
  *   sourceKind 'auto' shows AUTO CHART; message (optional): a status line drawn over the highway.
  */
 (function (root, factory) {
@@ -48,7 +49,10 @@
     const MISS_DIM = 0.3;
     const DROPPED_DIM = 0.45;
     const FONT = 'system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif';
+    const F_TAG = '600 11px ' + FONT, F_AUTO = '700 9px ' + FONT, F_SCORE = '700 20px ' + FONT;
+    const F_SMALL = '600 12px ' + FONT, F_SOLO = '700 22px ' + FONT, F_MSG = '600 14px ' + FONT;
     const EMPTY = Object.freeze([]);
+    const SP_FADE_S = 0.1;           // star power wash fade time constant (seconds of chart time)
 
     function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
     function cssHex(hex) { return '#' + (hex >>> 0).toString(16).padStart(6, '0'); }
@@ -258,10 +262,13 @@
 
         // Per-note memory (rebuilt only when the notes array changes): last judged state, for hit flashes.
         let lastNotes = null;
+        // State codes: 0 unjudged, 1 hit, 2 miss, 3 held (sustain active).
         let prevState = new Uint8Array(0);
+        let tracking = false;   // false until one frame has recorded states (no flashes for old hits)
         let maxSustain = 0;
         function prepareNotes(notes) {
             lastNotes = notes;
+            tracking = false;
             prevState = new Uint8Array(notes.length);
             maxSustain = 0;
             for (let i = 0; i < notes.length; i++) {
@@ -281,29 +288,35 @@
         const tapCol = new T.Color(0x15171f);
         const railCol = new T.Color(C.rail);
         let spIn = 0;
+        let lastNow = NaN;
+        // HUD colours and text, built once / when their values change.
+        const CSS = { text: cssHex(C.text), background: cssHex(C.background), meterBack: cssHex(C.meterBack),
+            overdrive: cssHex(C.overdrive), gold: cssHex(C.gold), solo: cssHex(C.solo) };
+        const hudText = { score: NaN, scoreStr: '0', mult: NaN, combo: NaN, streakStr: '',
+            soloHit: NaN, soloTotal: NaN, soloPctStr: '', soloStr: '', header: null, headerStr: '' };
         let cssW = 1, cssH = 1, dpr = 1;
         let destroyed = false;
         let hudDirty = true;
         const hudLast = { score: NaN, combo: NaN, mult: NaN, sp: NaN, spActive: false, stars: NaN,
             solo: false, soloHit: NaN, soloTotal: NaN, header: null, auto: false, message: null };
 
-        function placeTail(note, mask, code, sp, now, speed, pressed, whammy, cnt) {
+        function placeTail(note, mask, code, sp, now, speed, lefty, whammy, cnt) {
             const t = +note.t, len = +note.l;
             let zHead = L.noteZ(t, now, speed);
             let zEnd = L.noteZ(t + len, now, speed);
-            const hit = code === 1;
-            if (hit) zHead = Math.min(zHead, 0);
+            const held = code === 3;
+            if (held || code === 1) zHead = Math.min(zHead, 0);
             zHead = Math.min(zHead, TR.behind);
             zEnd = Math.max(zEnd, -TR.length);
             if (zHead - zEnd <= 0.01) return cnt;
-            const held = hit && now < t + len && L.sustainHeld(mask, pressed);
-            const dim = code === 2 ? MISS_DIM : (hit && !held && now > t ? DROPPED_DIM : 1);
+            // 'hit' with a tail left = dropped (a finished sustain has no tail ahead of the strike line).
+            const dim = code === 2 ? MISS_DIM : (code === 1 ? DROPPED_DIM : 1);
             const wob = held ? whammy : 0;
             L.tailSegments(zHead - zEnd, seg);
             for (let b = 0; b < TR.lanes; b++) {
                 const open = mask === 0;
                 if (!open && !((mask >> b) & 1)) continue;
-                const baseX = open ? 0 : L.laneX(b, placedLefty);
+                const baseX = open ? 0 : L.laneX(b, lefty);
                 const width = open ? W * 0.8 : 0.1;
                 tmp.copy(sp ? odCol : (open ? openCol : laneCol[b])).multiplyScalar(dim);
                 for (let k = 0; k < seg.n && cnt < MAX_TAIL; k++) {
@@ -334,7 +347,11 @@
             const spRanges = frame.starPower;
 
             // Star power: blue wash and rails.
-            spIn += ((spActive ? 1 : 0) - spIn) * 0.15;
+            // dt from chart time, clamped: a pause holds the fade, a seek steps it by at most 0.1 s.
+            let dt = Number.isFinite(lastNow) ? now - lastNow : 0;
+            if (!(dt >= 0) || dt > 0.1) dt = 0.1;
+            lastNow = now;
+            spIn += ((spActive ? 1 : 0) - spIn) * (1 - Math.exp(-dt / SP_FADE_S));
             spWashMat.opacity = 0.16 * spIn;
             railMat.color.copy(railCol).lerp(odCol, spIn);
 
@@ -370,17 +387,19 @@
                 const n = notes[i];
                 const t = +n.t;
                 const st = noteState ? noteState(i) : null;
-                const code = st === 'hit' ? 1 : (st === 'miss' ? 2 : 0);
+                const code = st === 'hit' ? 1 : (st === 'miss' ? 2 : (st === 'held' ? 3 : 0));
+                const judgedHit = code === 1 || code === 3;
                 const kind = L.gemKind(n);
                 const mask = kind === 'open' ? 0 : (n.f | 0) & L.FRET_MASK;
-                if (code === 1 && prevState[i] !== 1 && Math.abs(now - t) < 0.3) {
+                // Flash when the hit is first seen (keyed on the judgment, however late it lands).
+                if (judgedHit && tracking && prevState[i] !== 1 && prevState[i] !== 3) {
                     if (mask === 0) flashAt[TR.lanes] = now;
                     else for (let b = 0; b < TR.lanes; b++) if ((mask >> b) & 1) flashAt[b] = now;
                 }
                 prevState[i] = code;
                 const sp = L.rangeIndexAt(spRanges, t) >= 0;
-                if (+n.l > 0) nt = placeTail(n, mask, code, sp, now, speed, pressed, whammy, nt);
-                if (code === 1) continue;   // hit gems vanish (after the flash)
+                if (+n.l > 0) nt = placeTail(n, mask, code, sp, now, speed, lefty, whammy, nt);
+                if (judgedHit) continue;   // hit gems vanish (after the flash)
                 const z = L.noteZ(t, now, speed);
                 if (z > TR.behind || z < -TR.length) continue;
                 const dim = code === 2 ? MISS_DIM : 1;
@@ -413,6 +432,7 @@
                     }
                 }
             }
+            tracking = true;
             finish(tails, nt); finish(gemBody, ng); finish(gemRim, ng); finish(gemCap, ng);
             finish(gemGlow, nglow); finish(openBar, no);
 
@@ -463,55 +483,66 @@
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.clearRect(0, 0, cssW, cssH);
             const pad = 10;
-            const text = cssHex(C.text);
+            const text = CSS.text;
+            const ht = hudText;   // formatted strings, rebuilt only when their values change
+            if (ht.score !== score) { ht.score = score; ht.scoreStr = score.toLocaleString('en-US'); }
+            if (ht.mult !== mult || ht.combo !== combo) {
+                ht.mult = mult; ht.combo = combo; ht.streakStr = 'x' + mult + '   ' + combo + ' streak';
+            }
+            if (ht.soloHit !== soloHit || ht.soloTotal !== soloTotal) {
+                ht.soloHit = soloHit; ht.soloTotal = soloTotal;
+                ht.soloPctStr = L.soloPercent({ hit: soloHit, total: soloTotal }) + '%';
+                ht.soloStr = 'SOLO  ' + soloHit + ' / ' + soloTotal;
+            }
+            if (ht.header !== header) { ht.header = header; ht.headerStr = header.toUpperCase(); }
             ctx.textBaseline = 'alphabetic';
 
             // Header tag and AUTO CHART.
             ctx.textAlign = 'left';
             if (header) {
-                ctx.font = '600 11px ' + FONT;
+                ctx.font = F_TAG;
                 ctx.fillStyle = text;
-                ctx.fillText(header.toUpperCase(), pad, pad + 10);
+                ctx.fillText(ht.headerStr, pad, pad + 10);
             }
             if (auto) {
-                ctx.font = '700 9px ' + FONT;
+                ctx.font = F_AUTO;
                 const tw = ctx.measureText('AUTO CHART').width;
                 const y = pad + (header ? 16 : 0);
                 ctx.fillStyle = text;
                 ctx.fillRect(pad, y, tw + 10, 13);
-                ctx.fillStyle = cssHex(C.background);
+                ctx.fillStyle = CSS.background;
                 ctx.fillText('AUTO CHART', pad + 5, y + 10);
             }
 
             // Star power bar, score, multiplier x streak, stars (top right).
             const right = cssW - pad;
             const barW = 90, barH = 7;
-            ctx.fillStyle = cssHex(C.meterBack);
+            ctx.fillStyle = CSS.meterBack;
             ctx.fillRect(right - barW, pad, barW, barH);
             if (sp > 0) {
-                ctx.fillStyle = cssHex(C.overdrive);
+                ctx.fillStyle = CSS.overdrive;
                 ctx.fillRect(right - barW, pad, barW * sp, barH);
             }
             if (state) {
                 ctx.textAlign = 'right';
                 ctx.fillStyle = '#ffffff';
-                ctx.font = '700 20px ' + FONT;
-                ctx.fillText(score.toLocaleString('en-US'), right, pad + barH + 24);
-                ctx.font = '600 12px ' + FONT;
-                ctx.fillStyle = spActive ? cssHex(C.overdrive) : text;
-                ctx.fillText('x' + mult + '   ' + combo + ' streak', right, pad + barH + 41);
+                ctx.font = F_SCORE;
+                ctx.fillText(ht.scoreStr, right, pad + barH + 24);
+                ctx.font = F_SMALL;
+                ctx.fillStyle = spActive ? CSS.overdrive : text;
+                ctx.fillText(ht.streakStr, right, pad + barH + 41);
                 L.starFill(st, stars);
                 const r = 6, gap = 15;
                 for (let i = 0; i < 5; i++) {
                     const cx = right - r - (4 - i) * gap, cy = pad + barH + 56;
                     drawStar(ctx, cx, cy, r);
-                    ctx.fillStyle = cssHex(C.meterBack);
+                    ctx.fillStyle = CSS.meterBack;
                     ctx.fill();
                     const fill = i < stars.full ? 1 : (i === stars.full ? stars.frac : 0);
                     if (fill > 0) {
                         ctx.save();
                         ctx.clip();
-                        ctx.fillStyle = stars.gold ? cssHex(C.gold) : '#ffffff';
+                        ctx.fillStyle = stars.gold ? CSS.gold : '#ffffff';
                         ctx.fillRect(cx - r, cy - r, 2 * r * fill, 2 * r);
                         ctx.restore();
                     }
@@ -521,17 +552,17 @@
             // Solo: running percent.
             if (solo) {
                 ctx.textAlign = 'center';
-                ctx.fillStyle = cssHex(C.solo);
-                ctx.font = '700 22px ' + FONT;
-                ctx.fillText(L.soloPercent(state.solo) + '%', cssW / 2, cssH * 0.28);
-                ctx.font = '600 11px ' + FONT;
-                ctx.fillText('SOLO  ' + soloHit + ' / ' + soloTotal, cssW / 2, cssH * 0.28 + 16);
+                ctx.fillStyle = CSS.solo;
+                ctx.font = F_SOLO;
+                ctx.fillText(ht.soloPctStr, cssW / 2, cssH * 0.28);
+                ctx.font = F_TAG;
+                ctx.fillText(ht.soloStr, cssW / 2, cssH * 0.28 + 16);
             }
 
             // Status message.
             if (message) {
                 ctx.textAlign = 'center';
-                ctx.font = '600 14px ' + FONT;
+                ctx.font = F_MSG;
                 const tw = ctx.measureText(message).width;
                 ctx.fillStyle = 'rgba(11,13,20,0.82)';
                 ctx.fillRect(cssW / 2 - tw / 2 - 12, cssH * 0.45 - 18, tw + 24, 28);

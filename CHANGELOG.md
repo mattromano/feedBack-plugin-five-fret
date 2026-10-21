@@ -19,3 +19,8 @@ All notable changes to the 5-Fret plugin. The format follows
   measures come from the chart's beat list. New `getState()` fields `starPower`, `stars`, `solo` and
   events `sustain-start`, `sustain-end`, `sp-phrase`, `sp-phrase-miss`, `sp-ready`, `sp-activate`,
   `sp-end`, `solo-start`, `solo-end`.
+- `assets/engine.js`: `noteState(i)` reports `'held'` while the note's sustain is active.
+- `assets/profiles.js`: controller profiles, the input mapper, and bindings and settings storage.
+- `assets/layout.js` and `assets/highway3d.js`: the tilted 3D 5-fret highway (gems, HOPO glow, taps,
+  open bars, sustain tails that wobble while held, star power, solo bands, fret buttons, hit flashes)
+  with a HUD (header tag, AUTO CHART, score, multiplier, streak, star power bar, stars, solo percent).
