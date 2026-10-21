@@ -118,7 +118,9 @@
  *     fractional measure number, interpolated between downbeats (YARG: rounded integer measure ticks),
  *     so star power has no tick rounding. With fewer than two downbeats, 4 beats make a measure;
  *     with fewer than two beats, 120 BPM in 4/4 is assumed. Times outside the beat list are
- *     extrapolated at the tempo of its first or last interval.
+ *     extrapolated at the tempo of its first or last interval. Whammy gain is likewise fractional
+ *     measures (YARG: whole measure ticks, rounded, with the rounding remainder carried to the next
+ *     update).
  *  5. Input actions: YARG's GuitarAction values become names ('green'..'orange', 'strum_up',
  *     'strum_down', 'whammy', 'star_power') plus 'open', which only gamepad mode uses (deviation 1). In
  *     strum mode 'open' is ignored; open notes are strummed with no frets held, as in YARG. A 'whammy'
@@ -134,7 +136,8 @@
  *     (GetGuitarNoteFlags; YARG compares ticks with NoteSnapThreshold). Star power phrases and solos
  *     come from chart.starPower / chart.solos ([{start_time, end_time}] seconds); a note belongs to
  *     one when start - 0.1 ms <= t < end - 0.1 ms (YARG: tick ranges), and ranges without notes are
- *     left out.
+ *     left out. A note inside two overlapping ranges belongs to the later one only (ranges are not
+ *     clipped).
  *  7. Reporting: getState().notesMissed counts notes actually missed so far (YARG reports
  *     TotalNotes - NotesHit). 'combo-reset' fires on every combo reset, as YARG's OnComboReset does, and
  *     carries the combo it reset from. A solo's percent is reported as 0..100.
@@ -151,6 +154,8 @@
  *     the star power stats (StarPowerPhrasesHit, TimeInStarPower, ...).
  * 10. Overstrum during the tail of a sustain that was already scored in full (past its burst point)
  *     does not add its points a second time (YARG's Overstrum adds them again).
+ * 11. Hitting a note ends every active sustain that shares a fret with it. YARG's HitNote loop removes
+ *     sustains without stepping its index back, so it skips the sustain after each one it ends.
  * -------------------------------------------------------------------------------------------------
  */
 (function (root, factory) {
@@ -937,7 +942,8 @@
     Engine.prototype._updateSustains = function () {
         const p = this.params;
         const time = this.currentTime;
-        let pending = 0;
+        // Zeroed first, as YARG does: a sustain scored below must not also count as pending.
+        this.stats.pendingScore = 0;
         for (let i = 0; i < this.activeSustains.length; i++) {
             const sustain = this.activeSustains[i];
             const note = sustain.note;
@@ -964,7 +970,7 @@
                 if (isBurst || isEndOfSustain) sustain.finishedScoring = true;
                 const points = ceilPoints(this._sustainPoints(note, scoreBeat));
                 if (dropped || isBurst || isEndOfSustain) this._addScorePoints(points);
-                else pending += points * this.stats.multiplier;
+                else this.stats.pendingScore += points * this.stats.multiplier;
             }
 
             // Only removed when dropped or at its last moment.
@@ -973,7 +979,6 @@
                 i--;
             }
         }
-        this.stats.pendingScore = pending;
         this._updateStars();
     };
 

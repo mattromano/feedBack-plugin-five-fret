@@ -458,6 +458,17 @@ test('sustain scores per beat while held', () => {
     assert.equal(e2.getState().score, 150);
 });
 
+test('stars after a sustain bursts count its points once', () => {
+    // 20 s = 40 beats = 1000 sustain points: BaseScore 1050, guitar thresholds 63/126/210/493/819/1207.
+    const e = engine5([{ t: 1, f: G, l: 20 }]);
+    press(e, 0.9, 'green');
+    strum(e, 1);
+    for (let t = 2; t <= 21; t += 1) e.update(t); // pending points shown while held
+    e.update(25);
+    assert.equal(e.getState().score, 1050);
+    near(e.getState().stars, 5 + (1050 - 819) / (1207 - 819), 1e-6);
+});
+
 test('sustain drop ends sustain early', () => {
     const e = engine5([{ t: 1, f: G, l: 2 }]);
     const log = collect(e, ['sustain-end']);
