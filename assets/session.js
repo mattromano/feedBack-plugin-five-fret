@@ -6,9 +6,12 @@
  * one part at one difficulty:
  *   createSession({ chart, instrument, difficulty, gamepadMode, offsetMs, pressed?, now? }) ->
  *     { input(action, value, tSong), update(tSong), releaseAll(tSong), pressedFrets(), whammy(), state(), noteState(i),
- *       drainEvents(), notes, difficulty, offsetMs, resets }
+ *       drainEvents(), notes, difficulty, offsetMs, resets, starPower, starThresholds }
  *   drainEvents(): engine events as { type: event name, ...payload } (a payload's note type is noteType).
- *   chart: a bundle.fiveFretParts entry plus `beats` ({ notes, levels, starPower, solos, beats }).
+ *   chart: a bundle.fiveFretParts entry plus `beats` and `sections` ({ notes, levels, starPower, solos,
+ *   sourceKind, beats, sections }). An auto part (sourceKind 'auto') with no phrases gets them from
+ *   autoStarPower (one per section of 8+ notes, over its last 2 measures); starPower is what is played.
+ *   resets: how many times scoring started over (the first update, and each seek / loop).
  *   tSong: highway chart time (bundle.currentTime). The input offset is applied here, to inputs and to
  *   the engine clock alike, so an offset input is never clamped forward to a clock that ran ahead.
  *   pressed: bool[5] frets already held (a rebuild mid-song), applied to the engine on the first update.
@@ -68,15 +71,18 @@
      * setting: 'guitar' | 'rhythm' | 'bass' takes the first part of that instrument; 'auto' (and an
      * instrument the song lacks) takes bass when the arrangement name contains "bass", else guitar,
      * else the first part. null when there are no parts.
+     * opts (optional) = { exact?, showAuto? }: exact makes an instrument setting the song lacks give
+     * null instead of falling back (a band lane pinned to Rhythm never plays Lead). showAuto is
+     * accepted for Plan 5's auto-chart gate and does not change the pick yet. No opts: as before.
      */
-    function pickPart(parts, arrangementName, setting) {
+    function pickPart(parts, arrangementName, setting, opts) {
         if (!parts || typeof parts !== 'object') return null;
         const ids = Object.keys(parts).filter((id) => parts[id] && typeof parts[id] === 'object');
         if (!ids.length) return null;
         const byInstrument = (inst) => ids.find((id) => parts[id].instrument === inst) || null;
         if (setting === 'guitar' || setting === 'rhythm' || setting === 'bass') {
             const id = byInstrument(setting);
-            if (id) return id;
+            if (id || (opts && opts.exact === true)) return id;
         }
         if (/bass/i.test(typeof arrangementName === 'string' ? arrangementName : '')) {
             const id = byInstrument('bass');
@@ -127,6 +133,84 @@
         return list.map((x) => x.n);
     }
 
+    // ── Auto-chart star power (Ruling 5) ───────────────────────────────────────
+
+    const AUTO_SP_MIN_NOTES = 8;     // a section needs this many notes to get a phrase
+    const AUTO_SP_MEASURES = 2;      // the phrase covers the section's last this many measures
+    const MEASURE_EPS = 1e-6;        // float noise when a note sits on a downbeat
+
+    // An increasing piecewise-linear map xs -> ys (at least two points), extended at the end slopes.
+    function piecewise(xs, ys) {
+        const n = xs.length;
+        function lookup(from, to, v) {
+            let lo, hi;
+            if (v <= from[0]) { lo = 0; hi = 1; } else if (v >= from[n - 1]) { lo = n - 2; hi = n - 1; } else {
+                lo = 0; hi = n - 1;   // from[lo] <= v < from[hi]
+                while (hi - lo > 1) {
+                    const mid = (lo + hi) >> 1;
+                    if (from[mid] <= v) lo = mid; else hi = mid;
+                }
+            }
+            return to[lo] + (v - from[lo]) * (to[hi] - to[lo]) / (from[hi] - from[lo]);
+        }
+        return { at: (x) => lookup(xs, ys, x), time: (y) => lookup(ys, xs, y) };
+    }
+
+    // Measure numbers from chart.beats ([{ time, measure }], measure >= 0 on a downbeat), with the
+    // engine's fallbacks: fewer than two downbeats, 4 beats a measure; fewer than two beats, 2 s
+    // measures from 0 (120 BPM 4/4). { at(t) -> fractional measure, time(m) -> seconds }.
+    function measureMap(beats) {
+        const raw = [];
+        for (const b of Array.isArray(beats) ? beats : []) {
+            const obj = b !== null && typeof b === 'object';
+            const t = obj ? +(b.time !== undefined ? b.time : b.t) : +b;
+            if (Number.isFinite(t)) raw.push({ t, down: obj && b.measure !== null && b.measure !== undefined && +b.measure >= 0 });
+        }
+        raw.sort((a, b) => a.t - b.t);
+        const list = raw.filter((b, i) => i === 0 || b.t > raw[i - 1].t);
+        if (list.length < 2) return piecewise([0, 1], [0, 0.5]);
+        const downs = list.filter((b) => b.down).map((b) => b.t);
+        if (downs.length >= 2) return piecewise(downs, downs.map((_, i) => i));
+        return piecewise(list.map((b) => b.t), list.map((_, i) => i / 4));
+    }
+
+    /**
+     * Star power phrases for an auto-charted part ([{ start_time, end_time }] seconds): for each song
+     * section (bundle.sections, [{ time, name }]; a section runs to the next one's start) with at
+     * least 8 notes, one phrase over its last 2 measures. A section's last measure is the one holding
+     * its last note, so a section ending in rests (or the song's last section) still gets the notes at
+     * its end; the phrase never starts before the section does. `notes` are wire notes ({ t, ... }).
+     */
+    function autoStarPower(notes, sections, beats) {
+        const starts = [];
+        for (const s of Array.isArray(sections) ? sections : []) {
+            const t = s && typeof s === 'object' ? +s.time : NaN;
+            if (Number.isFinite(t)) starts.push(t);
+        }
+        if (!starts.length) return [];
+        starts.sort((a, b) => a - b);
+        const times = [];
+        for (const n of Array.isArray(notes) ? notes : []) if (n && Number.isFinite(+n.t)) times.push(+n.t);
+        times.sort((a, b) => a - b);
+        const m = measureMap(beats);
+        const out = [];
+        let j = 0;   // first note not before the current section
+        for (let i = 0; i < starts.length; i++) {
+            const start = starts[i];
+            const next = i + 1 < starts.length ? starts[i + 1] : Infinity;
+            while (j < times.length && times[j] < start) j++;
+            let k = j;
+            while (k < times.length && times[k] < next) k++;
+            if (k - j < AUTO_SP_MIN_NOTES) continue;
+            const lastMeasure = Math.floor(m.at(times[k - 1]) + MEASURE_EPS);
+            out.push({
+                start_time: Math.max(start, m.time(lastMeasure - (AUTO_SP_MEASURES - 1))),
+                end_time: Math.min(next, m.time(lastMeasure + 1)),
+            });
+        }
+        return out;
+    }
+
     // ── Session ───────────────────────────────────────────────────────────────
 
     function createSession(opts) {
@@ -137,12 +221,19 @@
         const notes = sortedNotes(picked.notes);
         const offsetMs = Number.isFinite(opts.offsetMs) ? opts.offsetMs : 0;
         const offset = offsetMs / 1000;
+        // An auto-charted part without phrases of its own gets them from the song's sections, placed
+        // by the full (expert) chart so every difficulty has the same ranges. Others are left as is.
+        const ownStarPower = Array.isArray(chart.starPower) ? chart.starPower : NO_EVENTS;
+        const starPower = chart.sourceKind === 'auto' && !ownStarPower.length
+            ? Object.freeze(autoStarPower(chart.notes, chart.sections, chart.beats)) : ownStarPower;
         const engine = E.create({
             notes,
             beats: Array.isArray(chart.beats) ? chart.beats : [],
-            starPower: Array.isArray(chart.starPower) ? chart.starPower : [],
+            starPower,
             solos: Array.isArray(chart.solos) ? chart.solos : [],
         }, { instrument: opts.instrument === 'bass' ? 'bass' : 'guitar', gamepadMode: !!opts.gamepadMode });
+        // The full chart's star thresholds (engine.reset on a seek leaves them as they are).
+        const starThresholds = Object.freeze(Array.isArray(engine.starThresholds) ? engine.starThresholds.slice() : []);
 
         // Held frets carried over from a previous session (a rebuild while the player holds frets).
         const pressed = [0, 1, 2, 3, 4].map((k) => !!(Array.isArray(opts.pressed) && opts.pressed[k]));
@@ -217,14 +308,18 @@
             get notes() { return notes; },
             get difficulty() { return picked.difficulty; },
             get offsetMs() { return offsetMs; },
+            /** The star power phrases in play: the chart's own, or an auto part's synthesised ones. */
+            get starPower() { return starPower; },
             get resets() { return resets; },
+            /** Star score thresholds for the whole chart (frozen), the same after any seek. */
+            get starThresholds() { return starThresholds; },
         };
         return api;
     }
 
     return {
         SEEK, DIFFICULTIES, PART_SETTINGS, MSG_NO_PARTS, MSG_NO_CONTROLLER, MSG_DISCONNECTED,
-        isJump, pickPart, inputChartTime, statusMessage,
+        isJump, pickPart, inputChartTime, statusMessage, autoStarPower,
         createSession,
     };
 });

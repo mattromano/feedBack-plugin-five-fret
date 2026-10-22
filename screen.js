@@ -13,6 +13,15 @@
  * resumes. Claim order: a controller with a saved binding (set up on the controls screen) first, then
  * a standard-mapping pad, each in slot order.
  *
+ * Band lanes (window.feedBackFiveFret, below): a canvas pinned with setLane gets a renderer that plays
+ * one controller (controllerKey), one part exactly, and the pinned difficulty and lefty. It holds that
+ * controller from setLane (once it is connected) until clearLane or destroy, paused or not; the claim
+ * rule above is for unpinned renderers. A pinned renderer never mounts the panel or saves settings,
+ * and its gamepad mode follows the controller's kind, not the saved setting. Its Start and a 1 s hold
+ * of Back are bus events for Build-a-Band (five_fret:band-pause, five_fret:band-back-hold); it never
+ * calls togglePlay. Every instance (pinned or not) puts its judgments and star power on the bus as
+ * five_fret:<type> (BAND_EVENTS), each with detail.canvas.
+ *
  * Time: the engine runs on the highway's chart clock. Each draw records (bundle.currentTime,
  * performance.now() / 1000); a controller event's time is that chart time plus the wall time since the
  * frame (session.inputChartTime). The session applies the controller's input offset, to inputs and to
@@ -31,7 +40,7 @@
     'use strict';
 
     const PLUGIN_ID = 'five_fret';
-    const ASSET_VERSION = '0.1.0';   // cache-buster for the lazily loaded files: bump with releases
+    const ASSET_VERSION = '0.2.0';   // cache-buster for the lazily loaded files: bump with releases
     const THREE_URL = '/static/vendor/three/three.module.min.js';
     const PLUGIN_ASSETS = '/api/plugins/' + PLUGIN_ID + '/assets/';
     // Load order matters: session.js needs engine.js, highway3d.js needs layout.js.
@@ -48,7 +57,28 @@
     const EV_CONTROLS = 'five_fret:controls-screen';    // { open }: the screen claims controllers while open
     const EV_BINDINGS = 'five_fret:bindings-changed';   // { controllerKey }: a binding was saved
     const EV_OFFSET = 'five_fret:offset-changed';       // { controllerKey, offsetMs }: an input offset was saved
+    // Judgments and star power for Build-a-Band (engine event type -> bus name), from every instance's
+    // draw. detail: the engine payload plus { canvas, controllerKey, partId, instrument, score, combo,
+    // multiplier, spActive, resets } (see emitBandEvents).
+    const BAND_EVENTS = Object.freeze({
+        hit: 'five_fret:hit', miss: 'five_fret:miss', overstrum: 'five_fret:overstrum',
+        'sustain-end': 'five_fret:sustain-end', 'sp-phrase': 'five_fret:sp-phrase',
+        'sp-ready': 'five_fret:sp-ready', 'sp-activate': 'five_fret:sp-activate', 'sp-end': 'five_fret:sp-end',
+    });
+    // A band lane's Start, and Back held BACK_HOLD_S, go to Build-a-Band ({ controllerKey, canvas }):
+    // it pauses and offers to leave. A band lane never calls togglePlay itself.
+    const EV_BAND_PAUSE = 'five_fret:band-pause';
+    const EV_BAND_BACK_HOLD = 'five_fret:band-back-hold';
+    const BACK_BUTTON = 8;      // Back / Select on standard-mapped pads (bindings have no back action)
+    const BACK_HOLD_S = 1;
     let _controlsOpen = false;   // renderers don't claim while the controls screen is open
+    // Band lanes, by canvas (see window.feedBackFiveFret): a pin made before an instance inits on the
+    // canvas, or across a re-init, still applies. _byCanvas finds the live instance drawing on one.
+    const _lanes = new WeakMap();         // canvas -> { controllerKey, part, difficulty, lefty }
+    const _scoreHidden = new WeakMap();   // canvas -> true: the HUD skips score, multiplier, streak, SP, stars
+    const _byCanvas = new WeakMap();      // canvas -> renderer instance
+    const LANE_PARTS = Object.freeze({ guitar: true, rhythm: true, bass: true });
+    const LANE_GAMEPAD_MODE = Object.freeze({ gamepadMode: null });   // a lane: by the controller's kind
     const EMPTY = Object.freeze([]);
     const NO_PRESSED = Object.freeze([false, false, false, false, false]);
 
@@ -120,6 +150,12 @@
 
     function _wallNow() { return performance.now() / 1000; }
 
+    // A gamepad-input list() entry's controllerKey (core's, else `id#nth` as profiles.controllerKey).
+    function _keyOf(P, info, nth) {
+        return info && typeof info.controllerKey === 'string' && info.controllerKey
+            ? info.controllerKey : P.controllerKey(info, nth);
+    }
+
     function _gamepadInput() {
         const gi = window.feedBack && window.feedBack.gamepadInput;
         return gi && gi.version === 1 ? gi : null;
@@ -142,6 +178,17 @@
         if (key === 'difficulty') return Object.prototype.hasOwnProperty.call(DIFFICULTY_LABELS, value);
         if (key === 'lefty' || key === 'gamepadMode') return typeof value === 'boolean';
         return false;
+    }
+
+    // Plan 5's "show auto charts" flag in five_fret.settings.v1 (default false). Read directly, so it
+    // works before profiles.js has loaded.
+    const SETTINGS_KEY = 'five_fret.settings.v1';
+    function _showAutoCharts() {
+        try {
+            const raw = localStorage.getItem(SETTINGS_KEY);
+            const v = raw ? JSON.parse(raw) : null;
+            return !!(v && typeof v === 'object' && v.showAutoCharts === true);
+        } catch (_) { return false; }
     }
 
     // ── Normal-player panel (one, owned by the main player's instance) ─────────
@@ -246,6 +293,10 @@
         // writes them back (see applySetting).
         let settings = { part: 'auto', difficulty: 'expert', lefty: false, gamepadMode: null, offsetMs: {} };
         let pending = {};                  // applySetting before profiles.js loaded
+        // This canvas's band lane (_lanes), or null. Its part, difficulty and lefty stand in for the
+        // instance's own settings while it is set (cur()); its gamepad mode is by controller kind.
+        let pin = null;
+        const cur = () => pin || settings;
 
         // Controller (handleInfo: its gamepad-input list() entry at claim time, for resolveBinding).
         // binding stays set while the claim is parked (paused / no part), so the gamepad mode, and with
@@ -254,23 +305,30 @@
         // wantClaim: a part is playing (see "Claim" above). readyKind: while no controller is held, the
         // binding kind of the one tryClaim would take (null: none), for the header and status while paused.
         let wantClaim = false, readyKind = null, claiming = false;
+        // A band lane's Back hold: when it went down (event clock, seconds; NaN while up), whether this
+        // hold has fired, and whether the binding leaves BACK_BUTTON free (not bound to an action).
+        let backDownAt = NaN, backFired = false, backFree = false;
 
         // Session and clock
         let session = null;
+        // Scoring restarts in sessions this instance has dropped (a rebuild, a song without the part),
+        // so a band event's `resets` (resetBase + session.resets) only ever goes up.
+        let resetBase = 0;
         // The picked part, recomputed only when the parts object (identity or key count), the
         // arrangement name or the part setting changes.
-        const pick = { parts: null, count: -1, arrangement: null, setting: null, partId: null };
+        const pick = { parts: null, count: -1, arrangement: null, setting: null, exact: false, partId: null };
         const statusArgs = { hasParts: false, hasController: false, connected: false };
         // What the session was built from: rebuilt when any of these change (compared field by field,
         // so the steady state allocates nothing).
         const built = { partId: null, part: null, difficulty: null, gamepadMode: null, offsetMs: null,
-            notes: null, notesLen: -1, levelNotes: null, levelLen: -1, beats: null, beatsLen: -1 };
+            notes: null, notesLen: -1, levelNotes: null, levelLen: -1, beats: null, beatsLen: -1,
+            sections: null, sectionsLen: -1 };
         let header = '', headerPart = null, headerSession = null, headerInput = null;
         let lastChartTime = NaN, lastFrameT = NaN, playing = true;
         const noteState = (i) => (session ? session.noteState(i) : null);
         const frame = {
             now: 0, notes: EMPTY, beats: EMPTY, starPower: EMPTY, solos: EMPTY, pressed: NO_PRESSED, whammy: 0,
-            noteState, state: null, lefty: false, header: '', sourceKind: '', message: null,
+            noteState, state: null, lefty: false, header: '', sourceKind: '', message: null, scoreHidden: false,
         };
 
         function countKeys(o) {
@@ -278,18 +336,23 @@
             for (const k in o) if (Object.prototype.hasOwnProperty.call(o, k)) n++;
             return n;
         }
+        // A band lane plays its part exactly (no fallback to another instrument).
         function pickedPart(parts, arrangement) {
             const count = parts && typeof parts === 'object' ? countKeys(parts) : 0;
+            const setting = cur().part, exact = !!pin;
             if (pick.parts !== parts || pick.count !== count || pick.arrangement !== arrangement
-                || pick.setting !== settings.part) {
-                pick.parts = parts; pick.count = count; pick.arrangement = arrangement; pick.setting = settings.part;
-                pick.partId = H.pickPart(parts, arrangement, settings.part);
+                || pick.setting !== setting || pick.exact !== exact) {
+                pick.parts = parts; pick.count = count; pick.arrangement = arrangement;
+                pick.setting = setting; pick.exact = exact;
+                pick.partId = exact
+                    ? H.pickPart(parts, arrangement, setting, { exact: true, showAuto: _showAutoCharts() })
+                    : H.pickPart(parts, arrangement, setting);
             }
             return pick.partId;
         }
 
         function gamepadMode() {
-            return P ? P.effectiveGamepadMode(settings, binding) : false;
+            return P ? P.effectiveGamepadMode(pin ? LANE_GAMEPAD_MODE : settings, binding) : false;
         }
         function offsetMs() {
             const key = handle && handle.controllerKey;
@@ -299,19 +362,54 @@
 
         // ── Controller ──
 
+        // The binding (and its mapper) we play with; a held Back is forgotten.
+        function useBinding(b) {
+            binding = b;
+            mapper = P.createMapper(b);
+            backFree = true;
+            const map = b && b.map ? b.map : {};
+            for (const k in map) {
+                const spec = map[k];
+                if (spec && spec.type === 'button' && spec.index === BACK_BUTTON) backFree = false;
+            }
+            backDownAt = NaN;
+        }
+
+        // A band lane's Back button: note when it goes down and comes up (the draw fires the hold).
+        function trackBack(ev) {
+            if (!backFree || ev.type !== 'button' || ev.index !== BACK_BUTTON) return;
+            let v = Number(ev.value);
+            if (!Number.isFinite(v)) v = ev.pressed ? 1 : 0;
+            if (v >= 0.5) {
+                if (backDownAt !== backDownAt) {   // NaN: it was up
+                    backDownAt = Number.isFinite(ev.t) ? ev.t : _wallNow();
+                    backFired = false;
+                }
+            } else if (v < 0.3) {
+                backDownAt = NaN;
+            }
+        }
+
         function onEvent(ev) {
             connected = true;   // events resume after a reconnect
             if (!mapper || !ev) return;
+            if (pin) trackBack(ev);
             const out = mapper.map(ev);
             for (let i = 0; i < out.length; i++) {
                 const a = out[i];
                 if (a.action === 'pause') {
-                    if (a.value && typeof window.togglePlay === 'function') {
+                    if (!a.value) continue;
+                    if (pin) _emit(EV_BAND_PAUSE, { controllerKey: pin.controllerKey, canvas });
+                    else if (typeof window.togglePlay === 'function') {
                         try { window.togglePlay(); } catch (e) { console.warn('[5-Fret] togglePlay failed:', e); }
                     }
                     continue;
                 }
                 if (!session) continue;
+                // A band lane keeps its claim while paused (Ruling 7): nothing is judged then, so
+                // presses (and whammy movement) are dropped; releases still go through, so nothing
+                // stays held. The player presses again after resuming.
+                if (pin && !playing && a.value) continue;
                 // The session applies the input offset (to inputs and its clock), so none here.
                 const t = H.inputChartTime(lastChartTime, lastFrameT, ev.t, 0, playing);
                 if (Number.isFinite(t)) session.input(a.action, a.value, t);
@@ -321,7 +419,7 @@
         // Free connected controllers this renderer could play with, in claim order: those with a saved
         // binding first, then standard pads (the implicit standard profile), each in slot order. So a
         // controller set up on the controls screen wins over a pad in an earlier slot (a Steam Deck's
-        // built-in controls are always slot 0).
+        // built-in controls are always slot 0). A band lane: only its own controller.
         function claimable() {
             const gi = _gamepadInput();
             if (!gi) return [];
@@ -334,7 +432,9 @@
                 if (!info || !info.connected) continue;
                 nth[info.id] = (nth[info.id] || 0) + 1;
                 if (info.claimedBy) continue;   // another plugin, or another 5-fret panel
-                const stored = bindings[P.controllerKey(info, nth[info.id])];
+                const key = _keyOf(P, info, nth[info.id]);
+                if (pin && key !== pin.controllerKey) continue;
+                const stored = bindings[key];
                 const b = P.resolveBinding(info, stored);
                 if (b) (b === stored ? saved : standard).push({ info, kind: b.kind });
             }
@@ -356,13 +456,13 @@
                 for (const c of cands) {
                     const h = gi.claim(c.info.index, PLUGIN_ID);
                     if (!h) continue;
+                    if (pin && h.controllerKey !== pin.controllerKey) { h.release(); continue; }
                     // The claim's controllerKey is the authority (it can differ after renumbering).
                     const b = P.resolveBinding(c.info, bindings[h.controllerKey]);
                     if (!b) { h.release(); continue; }
                     handle = h;
                     handleInfo = c.info;
-                    binding = b;
-                    mapper = P.createMapper(b);
+                    useBinding(b);
                     connected = true;
                     h.addListener(onEvent);
                     return;
@@ -382,7 +482,7 @@
                     // Nothing stays latched while it is gone: release every held fret, and start the
                     // mapper over so a still-down button reads as a fresh press when events resume.
                     if (session) session.releaseAll(H.inputChartTime(lastChartTime, lastFrameT, _wallNow(), 0, playing));
-                    if (binding) mapper = P.createMapper(binding);
+                    if (binding) useBinding(binding);
                 } else if (ev.type === 'connect') {
                     connected = true;
                 }
@@ -397,6 +497,7 @@
             if (!handle) return;
             const h = handle;
             handle = null; handleInfo = null; mapper = null; connected = false;
+            backDownAt = NaN;
             if (!park) binding = null;
             if (session) session.releaseAll(H.inputChartTime(lastChartTime, lastFrameT, _wallNow(), 0, playing));
             try { h.removeListener(onEvent); h.release(); } catch (_) { /* ignore */ }
@@ -435,36 +536,75 @@
             const b = P.resolveBinding(handleInfo, P.loadBindings()[handle.controllerKey]);
             if (!b) { dropHandle(); tryClaim(); return; }
             if (session) session.releaseAll(H.inputChartTime(lastChartTime, lastFrameT, _wallNow(), 0, playing));
-            binding = b;
-            mapper = P.createMapper(b);
+            useBinding(b);
         }
 
         // ── Session ──
 
-        function ensureSession(partId, part, beats) {
+        // Forget the session, keeping count of the scoring restarts it made.
+        function dropSession() {
+            if (session) resetBase += session.resets;
+            session = null;
+        }
+
+        function ensureSession(partId, part, beats, sections) {
+            const difficulty = cur().difficulty;
             const levels = part.levels || {};
-            const lv = levels[settings.difficulty];
+            const lv = levels[difficulty];
             const levelNotes = lv && Array.isArray(lv.notes) ? lv.notes : null;
             const gm = gamepadMode();
             const off = offsetMs();
             const b = built;
-            if (session && b.partId === partId && b.part === part && b.difficulty === settings.difficulty
+            if (session && b.partId === partId && b.part === part && b.difficulty === difficulty
                 && b.gamepadMode === gm && b.offsetMs === off
                 && b.notes === part.notes && b.notesLen === (part.notes ? part.notes.length : -1)
                 && b.levelNotes === levelNotes && b.levelLen === (levelNotes ? levelNotes.length : -1)
-                && b.beats === beats && b.beatsLen === beats.length) return;
-            b.partId = partId; b.part = part; b.difficulty = settings.difficulty; b.gamepadMode = gm; b.offsetMs = off;
+                && b.beats === beats && b.beatsLen === beats.length
+                && b.sections === sections && b.sectionsLen === sections.length) return;
+            b.partId = partId; b.part = part; b.difficulty = difficulty; b.gamepadMode = gm; b.offsetMs = off;
             b.notes = part.notes; b.notesLen = part.notes ? part.notes.length : -1;
             b.levelNotes = levelNotes; b.levelLen = levelNotes ? levelNotes.length : -1;
             b.beats = beats; b.beatsLen = beats.length;
+            b.sections = sections; b.sectionsLen = sections.length;
+            const pressed = session ? session.pressedFrets() : null;   // frets still held carry over
+            dropSession();
             session = H.createSession({
-                chart: { notes: part.notes, levels, starPower: part.starPower, solos: part.solos, beats },
+                // sourceKind and sections: an auto part's star power phrases (session.autoStarPower).
+                chart: { notes: part.notes, levels, starPower: part.starPower, solos: part.solos, beats,
+                    sourceKind: part.sourceKind, sections },
                 instrument: part.instrument === 'bass' ? 'bass' : 'guitar',
-                difficulty: settings.difficulty,
+                difficulty,
                 gamepadMode: gm,
                 offsetMs: off,
-                pressed: session ? session.pressedFrets() : null,   // frets still held carry over
+                pressed,
             });
+        }
+
+        // This draw's engine events on core's bus (BAND_EVENTS), only with a bus that can emit. They
+        // are the session's own event objects, given the band fields in place, and `state` is the
+        // draw's one session.state() read; a draw without events does nothing. A throwing listener is
+        // the listener's problem, never the draw's.
+        function emitBandEvents(events, state) {
+            if (!events.length) return;
+            const bus = _bus();
+            if (!bus) return;
+            const controllerKey = handle ? handle.controllerKey : (pin ? pin.controllerKey : null);
+            const resets = resetBase + session.resets;
+            for (let i = 0; i < events.length; i++) {
+                const ev = events[i];
+                const name = BAND_EVENTS[ev.type];
+                if (!name) continue;
+                ev.canvas = canvas;
+                ev.controllerKey = controllerKey;
+                ev.partId = built.partId;
+                ev.instrument = built.part.instrument;
+                ev.score = state.score;
+                ev.combo = state.combo;
+                ev.multiplier = state.multiplier;
+                ev.spActive = state.starPower.active;
+                ev.resets = resets;
+                try { bus.emit(name, ev); } catch (_) { /* listeners only */ }
+            }
         }
 
         // "PART · INPUT · DIFFICULTY", rebuilt only when the part, session or input label changes. INPUT is
@@ -475,7 +615,7 @@
             if (part === headerPart && session === headerSession && input === headerInput) return header;
             headerPart = part; headerSession = session; headerInput = input;
             header = [part.name || part.instrument || '5-Fret', input,
-                DIFFICULTY_LABELS[session ? session.difficulty : settings.difficulty] || ''].join(' · ');
+                DIFFICULTY_LABELS[session ? session.difficulty : cur().difficulty] || ''].join(' · ');
             return header;
         }
 
@@ -521,12 +661,14 @@
             releaseController();
             binding = null; wantClaim = false; readyKind = null;
             _unmountPanel(instance);
+            if (canvas && _byCanvas.get(canvas) === instance) _byCanvas.delete(canvas);
+            pin = null;
             if (view) { try { view.destroy(); } catch (e) { console.warn('[5-Fret] view destroy failed:', e); } }
             view = null;
             if (hud) { try { hud.remove(); } catch (_) { /* gone */ } }
             hud = null;
             canvas = null;
-            session = null;
+            dropSession();
             headerPart = headerSession = headerInput = null;
             lastChartTime = lastFrameT = NaN;
             lastW = lastH = 0;
@@ -545,6 +687,8 @@
                     return;
                 }
                 canvas = cv;
+                _byCanvas.set(cv, instance);
+                pin = _lanes.get(cv) || null;
                 hud = document.createElement('canvas');
                 hud.className = 'five-fret-hud';
                 hud.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;z-index:2;';
@@ -562,8 +706,11 @@
                     doResize();
                     const gi = _gamepadInput();
                     if (gi) offChange = gi.on('change', onChange);
-                    tryClaim();   // nothing plays yet: notes readyKind; the first playing draw claims
-                    _mountPanel(instance);
+                    // Unpinned, nothing plays yet: notes readyKind (the first playing draw claims). A
+                    // band lane claims its controller now.
+                    if (pin) wantClaim = true;
+                    tryClaim();
+                    if (!pin) _mountPanel(instance);
                 });
                 this.readyPromise.catch((e) => {
                     if (e && e.message === 'superseded') return;
@@ -586,14 +733,15 @@
                 const part = partId ? parts[partId] : null;
                 const beats = Array.isArray(bundle.beats) ? bundle.beats : EMPTY;
                 if (part) {
-                    ensureSession(partId, part, beats);
+                    // Sections only matter to an auto part (its star power), so they never rebuild a chart's.
+                    const sections = part.sourceKind === 'auto' && Array.isArray(bundle.sections) ? bundle.sections : EMPTY;
+                    ensureSession(partId, part, beats, sections);
                     session.update(t);
-                    session.drainEvents();   // nothing consumes them yet; keep the queue short
                 } else {
-                    session = null;
+                    dropSession();
                 }
-                // Hold the controller only while a part plays (see "Claim" above).
-                const want = !!part && playing;
+                // Hold the controller only while a part plays (see "Claim" above); a band lane always.
+                const want = pin ? true : (!!part && playing);
                 if (want !== wantClaim) {
                     wantClaim = want;
                     if (!want) dropHandle(true);
@@ -603,12 +751,13 @@
                 frame.now = t;
                 frame.notes = session ? session.notes : EMPTY;
                 frame.beats = beats;
-                frame.starPower = part && Array.isArray(part.starPower) ? part.starPower : EMPTY;
+                frame.starPower = session ? session.starPower : EMPTY;   // an auto part's synthesised ones too
                 frame.solos = part && Array.isArray(part.solos) ? part.solos : EMPTY;
                 frame.pressed = session ? session.pressedFrets() : NO_PRESSED;
                 frame.whammy = session ? session.whammy() : 0;
                 frame.state = session ? session.state() : null;
-                frame.lefty = !!settings.lefty;
+                frame.lefty = !!cur().lefty;
+                frame.scoreHidden = _scoreHidden.get(canvas) === true;
                 frame.header = part ? headerFor(part) : '';
                 frame.sourceKind = part ? part.sourceKind : '';
                 statusArgs.hasParts = !!part;
@@ -617,6 +766,12 @@
                 statusArgs.connected = handle ? connected : true;
                 frame.message = H.statusMessage(statusArgs);
                 view.render(frame);
+                if (session) emitBandEvents(session.drainEvents(), frame.state);
+                // A band lane's Back held BACK_HOLD_S: once per hold (a release before then cancels it).
+                if (pin && handle && !backFired && backDownAt === backDownAt && lastFrameT - backDownAt >= BACK_HOLD_S) {
+                    backFired = true;
+                    _emit(EV_BAND_BACK_HOLD, { controllerKey: pin.controllerKey, canvas });
+                }
             },
             resize() { doResize(); },
             destroy() { teardown(); },
@@ -632,7 +787,37 @@
             },
             getSetting(key) {
                 if (key === 'gamepadMode') return gamepadMode();
-                return settings[key];
+                return cur()[key];
+            },
+            // ── Band API hooks (window.feedBackFiveFret) ──
+            // This canvas's pin was set, changed or cleared.
+            _pinChanged() {
+                const was = pin;
+                pin = canvas ? (_lanes.get(canvas) || null) : null;
+                if (!P) return;   // init's load claims (or mounts the panel) once it is done
+                if (pin) {
+                    _unmountPanel(instance);
+                    if (handle && handle.controllerKey !== pin.controllerKey) dropHandle();
+                    wantClaim = true;
+                    tryClaim();
+                } else if (was) {
+                    wantClaim = false;    // first: the release's change event must not re-claim
+                    dropHandle();         // back to the unpinned claim order (the next draw claims
+                    tryClaim();           // again if a part plays); notes readyKind
+                    _mountPanel(instance);
+                }
+            },
+            // Engine state plus what the band needs, or null with no session.
+            _bandState() {
+                if (!session || !built.part) return null;
+                return Object.assign(session.state(), {
+                    starThresholds: session.starThresholds.slice(),
+                    partId: built.partId,
+                    instrument: built.part.instrument,
+                    sourceKind: built.part.sourceKind,
+                    controllerKey: handle ? handle.controllerKey : (pin ? pin.controllerKey : null),
+                    connected: !!handle && connected,
+                });
             },
         };
         return instance;
@@ -647,7 +832,8 @@
 
     const SCREEN_ID = 'plugin-' + PLUGIN_ID;
     const CONTROLS_OWNER = PLUGIN_ID + '.controls';
-    const _ctl = { visit: 0, screen: null, back: null };
+    // returnTo: where Back goes on this visit (openControls({ returnTo }); 'home' otherwise).
+    const _ctl = { visit: 0, screen: null, back: null, returnTo: 'home' };
 
     function _bus() {
         const b = window.feedBack;
@@ -692,7 +878,7 @@
         const back = document.getElementById('five-fret-controls-back');
         if (back && back !== _ctl.back) {
             _ctl.back = back;
-            back.addEventListener('click', () => { if (typeof window.showScreen === 'function') window.showScreen('home'); });
+            back.addEventListener('click', () => { if (typeof window.showScreen === 'function') window.showScreen(_ctl.returnTo); });
         }
         _listNote(list, 'Loading…');
         _loadControls().then(({ P, C }) => {
@@ -716,6 +902,7 @@
         if (_ctl.screen) { try { _ctl.screen.destroy(); } catch (e) { console.warn('[5-Fret] controls destroy failed:', e); } }
         _ctl.screen = null;
         _controlsOpen = false;   // after the screen's releases, so renderers claim once, on the event
+        _ctl.returnTo = 'home';
         _emit(EV_CONTROLS, { open: false });
     }
 
@@ -733,6 +920,142 @@
         try { el = document.getElementById(SCREEN_ID); } catch (_) { el = null; }
         if (el && el.classList && el.classList.contains('active')) _openControls();
     })();
+
+    // ── Band API (window.feedBackFiveFret), modelled on window.feedBackDrums ────
+    //
+    // Build-a-Band pins one renderer per controller lane by its canvas. Pins, and hidden score HUDs,
+    // are kept per canvas, so they apply to an instance that inits on the canvas later.
+
+    // profiles.js alone, on demand (listControllers / createMapper need no other asset).
+    let _profilesPromise = null;
+    function _loadProfiles() {
+        if (window.FiveFretProfiles) return Promise.resolve(window.FiveFretProfiles);
+        if (_profilesPromise) return _profilesPromise;
+        const url = _assetUrl('profiles.js');
+        _profilesPromise = _loadScript(url).then(() => {
+            if (!window.FiveFretProfiles) throw new Error('profiles.js did not register');
+            return window.FiveFretProfiles;
+        }).catch((e) => {
+            _profilesPromise = null;
+            if (!window.FiveFretProfiles) _dropScript(url);
+            throw e;
+        });
+        return _profilesPromise;
+    }
+
+    function _canvasArg(canvas) { return !!canvas && typeof canvas === 'object'; }
+
+    // A controller's display name: its id up to the first " (", at most 24 characters, plus " n" for
+    // the nth identical one (from its key's #n).
+    function _controllerName(id, key) {
+        let name = typeof id === 'string' ? id : '';
+        const cut = name.indexOf(' (');
+        if (cut >= 0) name = name.slice(0, cut);
+        name = name.trim().slice(0, 24).trim() || 'Controller';
+        const m = typeof key === 'string' ? /#(\d+)$/.exec(key) : null;
+        const n = m ? +m[1] : 1;
+        return n > 1 ? name + ' ' + n : name;
+    }
+
+    // Every gamepad-input entry with its key (core's, else `id#n` among connected identical ones).
+    function _controllerEntries(P) {
+        const gi = _gamepadInput();
+        if (!gi) return [];
+        let list;
+        try { list = gi.list(); } catch (_) { return []; }
+        const nth = Object.create(null);
+        const out = [];
+        for (const info of list || []) {
+            if (!info) continue;
+            let key = null;
+            if (typeof info.controllerKey === 'string' && info.controllerKey) key = info.controllerKey;
+            else if (info.connected) { nth[info.id] = (nth[info.id] || 0) + 1; key = P.controllerKey(info, nth[info.id]); }
+            out.push({ info, key });
+        }
+        return out;
+    }
+
+    window.feedBackFiveFret = {
+        version: 1,
+        // Pin the renderer on `canvas` (now, or the one that inits on it) to one controller, part,
+        // difficulty and lefty. false (changing nothing) on bad arguments; calling again updates.
+        setLane(canvas, opts) {
+            if (!_canvasArg(canvas) || !opts || typeof opts !== 'object') return false;
+            const { controllerKey, part, difficulty } = opts;
+            const lefty = opts.lefty === undefined ? false : opts.lefty;
+            if (typeof controllerKey !== 'string' || !controllerKey) return false;
+            if (!Object.prototype.hasOwnProperty.call(LANE_PARTS, part)) return false;
+            if (!Object.prototype.hasOwnProperty.call(DIFFICULTY_LABELS, difficulty)) return false;
+            if (typeof lefty !== 'boolean') return false;
+            _lanes.set(canvas, { controllerKey, part, difficulty, lefty });
+            const inst = _byCanvas.get(canvas);
+            if (inst) inst._pinChanged();
+            return true;
+        },
+        // Forget the pin: the instance goes back to its own settings and claim order.
+        clearLane(canvas) {
+            if (!_canvasArg(canvas) || !_lanes.has(canvas)) return;
+            _lanes.delete(canvas);
+            const inst = _byCanvas.get(canvas);
+            if (inst) inst._pinChanged();
+        },
+        // A pinned lane's difficulty (drums parity). false for an unpinned canvas or a bad id.
+        setDifficulty(id, canvas) {
+            const lane = _canvasArg(canvas) ? _lanes.get(canvas) : null;
+            if (!lane || !Object.prototype.hasOwnProperty.call(DIFFICULTY_LABELS, id)) return false;
+            lane.difficulty = id;   // the instance reads it on its next draw
+            return true;
+        },
+        // Hide (true) or show (false) that lane's score, multiplier, streak, SP bar and stars.
+        setScoreHudHidden(canvas, hidden) {
+            if (!_canvasArg(canvas) || typeof hidden !== 'boolean') return false;
+            if (hidden) _scoreHidden.set(canvas, true);
+            else _scoreHidden.delete(canvas);
+            return true;
+        },
+        isScoreHudHidden(canvas) { return _canvasArg(canvas) && _scoreHidden.get(canvas) === true; },
+        // Engine getState() plus { starThresholds (full chart), partId, instrument, sourceKind,
+        // controllerKey, connected }, or null (no instance on the canvas, or no part playing).
+        getInstanceState(canvas) {
+            const inst = _canvasArg(canvas) ? _byCanvas.get(canvas) : null;
+            try { return inst ? inst._bandState() : null; } catch (_) { return null; }
+        },
+        // Promise of [{ index, controllerKey, id, mapping, name, kind, connected, claimedBy }];
+        // kind 'gamepad' | 'guitar', or null when the controller needs setup.
+        listControllers() {
+            return _loadProfiles().then((P) => {
+                const bindings = P.loadBindings();
+                return _controllerEntries(P).map(({ info, key }) => {
+                    const b = P.resolveBinding(info, key ? bindings[key] : null);
+                    return {
+                        index: info.index, controllerKey: key, id: info.id, mapping: info.mapping,
+                        name: _controllerName(info.id, key),
+                        kind: b ? (b.kind === 'gamepad' ? 'gamepad' : 'guitar') : null,
+                        connected: !!info.connected, claimedBy: info.claimedBy || null,
+                    };
+                });
+            });
+        },
+        // Promise of a mapper ({ map(ev) -> [{ action, value }] }) from the controller's resolved
+        // binding, or null (unknown key, or a controller that needs setup).
+        createMapper(controllerKey) {
+            return _loadProfiles().then((P) => {
+                if (typeof controllerKey !== 'string' || !controllerKey) return null;
+                const entry = _controllerEntries(P).find((e) => e.key === controllerKey);
+                const b = P.resolveBinding(entry ? entry.info : null, P.loadBindings()[controllerKey]);
+                return b ? P.createMapper(b) : null;
+            });
+        },
+        // Plan 5's "show auto charts" flag (five_fret.settings.v1), default false.
+        showAutoCharts: () => _showAutoCharts(),
+        // Show the controls screen; its Back button goes to returnTo (default 'home') for this visit.
+        openControls(opts) {
+            const to = opts && typeof opts.returnTo === 'string' && opts.returnTo ? opts.returnTo : 'home';
+            if (typeof window.showScreen !== 'function') return;
+            _ctl.returnTo = to;
+            window.showScreen(SCREEN_ID);
+        },
+    };
 
     function factory() { return createRenderer(); }
     factory.contextType = 'webgl2';
