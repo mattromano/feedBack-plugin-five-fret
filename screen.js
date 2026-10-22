@@ -1134,8 +1134,20 @@
                 title: 'Difficulty', default: _savedDifficulty(),
                 items: Object.keys(DIFFICULTY_LABELS).map((k) => ({ key: k, label: DIFFICULTY_LABELS[k] })),
             }),
-            run: (song, ctx) => window.feedBackFiveFret.playOnPart(song.filename, ctx && ctx.variant,
-                ctx && ctx.choice != null ? ctx.choice : undefined),
+            // With RockHeroSmith installed, the song plays on its stage as a one-player band (stems
+            // drop out on misses, its HUD and results); the choices are still saved as the defaults.
+            run: (song, ctx) => {
+                const part = ctx && ctx.variant;
+                const difficulty = ctx && ctx.choice != null ? ctx.choice : undefined;
+                const rhs = window.rockHeroSmith;
+                if (rhs && rhs.version === 1 && typeof rhs.playSolo === 'function'
+                    && Object.prototype.hasOwnProperty.call(LANE_PARTS, part)) {
+                    _saveSetting('part', part);
+                    if (Object.prototype.hasOwnProperty.call(DIFFICULTY_LABELS, difficulty)) _saveSetting('difficulty', difficulty);
+                    return rhs.playSolo(song, { kind: 'five_fret', part, difficulty });
+                }
+                return window.feedBackFiveFret.playOnPart(song.filename, part, difficulty);
+            },
         });
     })();
 

@@ -1545,3 +1545,16 @@ test('play-as asks for the difficulty (saved one by default) and playOnPart save
     assert.equal(env.win.feedBackFiveFret.playOnPart('x.sloppak', 'guitar', 'insane'), false);
     assert.equal(plays.length, 1);
 });
+
+test('with RockHeroSmith installed, play-as plays solo on its stage (and still saves the choices)', (t) => {
+    const reg = fakeCardActions();
+    const env = setup(t, { cardActions: reg });
+    const solo = [];
+    env.win.feedBack.ui.playSongAs = () => { throw new Error('should not play directly'); };
+    env.win.rockHeroSmith = { version: 1, playSolo: (item, o) => { solo.push([item.filename, o]); return Promise.resolve('started'); } };
+    const song = { filename: 'x.sloppak', five_fret_parts: ['bass:chart'] };
+    reg.actions[0].run(song, { variant: 'bass', choice: 'hard' });
+    assert.deepEqual(solo, [['x.sloppak', { kind: 'five_fret', part: 'bass', difficulty: 'hard' }]]);
+    assert.equal(P.loadSettings().part, 'bass');
+    assert.equal(P.loadSettings().difficulty, 'hard');
+});
