@@ -69,19 +69,46 @@ first.
 ```js
 const view = FiveFretHighway3D.createView(THREE, canvas, { hudCanvas, context });
 view.resize(cssWidth, cssHeight, devicePixelRatio);
-view.render({ now, notes, beats, starPower, solos, pressed, whammy, noteState, state,
+view.render({ now, wallNow, events, notes, beats, starPower, solos, pressed, whammy, noteState, state,
               lefty, header, sourceKind, lookahead, message, scoreHidden });
+view.fxSnapshot();   // the last frame's effects, for tests and debugging
 view.destroy();
 ```
 
-It draws five lanes with beat and measure lines, round gems (HOPOs with a white glow, taps with a dark
-centre, open notes as a purple bar), and sustain tails. A tail wobbles with the whammy while the
-engine reports the note `'held'`, and is dimmed once dropped. Star power phrases are drawn as
-white/blue gems, and the highway turns blue while star power is active. Solo sections show as a band,
-fret buttons light from `pressed`, hit gems flash and vanish, and missed gems dim. The HUD shows the
-header tag, **AUTO CHART** for auto-charted parts, the score, the multiplier and streak, the star
-power bar, the stars and the solo percent. `lefty` mirrors the lanes. Meshes are built once and
-reused, and `render` makes no DOM queries.
+The look follows the drums plugin's Rock Band-style highway (behaviour only, written fresh; no artwork
+from any game):
+
+- **Track:** a scrolling textured track with the five lanes faintly tinted green / red / yellow / blue /
+  orange, fog, a rim light, lane dividers, beat and measure lines, and side rails with glow strips.
+  `lefty` mirrors the lanes.
+- **Strike line:** five rounded fret targets in the lane colours that light up and grow while their fret
+  (or its sustain) is held, with the lane behind them tinted.
+- **Gems:** bevelled rounded gems with an additive glow. Strums have a lighter top and a dark frame line,
+  HOPOs are lower with a white top, taps are dark with a lane-coloured top, and open notes are a purple
+  bar across the highway. Star power phrase gems are drawn in the star power colour.
+- **Sustains:** tails wobble with the whammy while the engine reports the note `'held'`, glow and throw
+  sparks at the strike line while held (not while paused), and grey out once dropped.
+- **Hits and misses:** the view reads the session's engine events (`events`, from
+  `session.drainEvents()`). A hit flashes each of its frets' lanes in the timing colour (green within
+  25 ms, blue early, orange late), throws a ring, a flare and a spark burst that grows with the streak,
+  and the gem carries on past the strike line white-hot and fades. A miss flashes its lanes red and the
+  gem carries on red. An overstrum flashes the strike line red. Breaking a streak of 3 or more washes
+  the screen red.
+- **Star power:** the wash, rails and dividers pulse blue while it is active, and the rails glow faintly
+  once it can be activated. A toast announces activation, completed phrases, READY and solos.
+- **HUD:** the star power meter (READY / ACTIVE, pulsing), a big score, stars, accuracy, an early / late
+  timing meter of the last 24 hits (`offsetMs` on the session's hit events), the multiplier ring with
+  its progress to the next multiplier, the NOTE STREAK, FULL COMBO, `+points` pops, a combo ring every
+  10 notes and bursts at 25, 50 and every 100. It also shows the header tag, **AUTO CHART**, the solo
+  percent and the status message. With room beside the track, the score column sits right of it and
+  the multiplier left of it. Narrow lanes get a compact, scaled HUD in the bottom corners without the
+  timing meter.
+- **Band lanes** (`scoreHidden`): every highway effect, the streak ring, bursts and red wash, the solo
+  percent and the toasts stay. The score panels (meter, score, stars, accuracy, timing, multiplier,
+  streak, pops) and the header tag are left out.
+
+Meshes, pools (24 flashes, 480 sparks, 12 score pops) and buffers are built once and reused, `render`
+makes no DOM queries, and the HUD is only redrawn when something on it changes or animates.
 
 ## Player
 

@@ -40,7 +40,7 @@
     'use strict';
 
     const PLUGIN_ID = 'five_fret';
-    const ASSET_VERSION = '0.2.1';   // cache-buster for the lazily loaded files: bump with releases
+    const ASSET_VERSION = '0.3.0';   // cache-buster for the lazily loaded files: bump with releases
     const THREE_URL = '/static/vendor/three/three.module.min.js';
     const PLUGIN_ASSETS = '/api/plugins/' + PLUGIN_ID + '/assets/';
     // Load order matters: session.js needs engine.js, highway3d.js needs layout.js.
