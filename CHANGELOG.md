@@ -3,6 +3,11 @@
 All notable changes to the 5-Fret plugin. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow `plugin.json`.
 
+## [0.2.1] - Unreleased
+
+### Fixed
+- HUD moved to the bottom corners so it no longer overlaps the player's title, tuning and time; band lanes (score HUD hidden) no longer draw the header tag, and AUTO CHART sits bottom-left.
+
 ## [0.2.0] - Unreleased
 
 ### Added

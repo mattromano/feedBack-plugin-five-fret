@@ -139,3 +139,24 @@ test('createView throws a clear error without WebGL2', () => {
     assert.throws(() => H.createView({}, { getContext: () => null }, { hudCanvas: null }), /WebGL2 is not available/);
     assert.throws(() => H.createView({}, null), /canvas/);
 });
+
+test('hudLayout keeps the HUD in the bottom corners, clear of the player chrome', () => {
+    const lay = H.hudLayout(1000, 600, { scoreHidden: false });
+    assert.equal(lay.showHeader, true);
+    assert.ok(lay.header.y > 600 * 0.9 && lay.header.x < 100, 'header tag bottom-left');
+    assert.ok(lay.bar.y > 600 * 0.8, 'score block starts in the lower part');
+    assert.equal(lay.right, 990);
+    assert.ok(lay.starsY + 6 <= 600, 'stars stay on the canvas');
+    assert.ok(lay.bar.y < lay.scoreY && lay.scoreY < lay.streakY && lay.streakY < lay.starsY, 'block order');
+    assert.ok(lay.auto.y + 13 < lay.header.y - 10, 'AUTO CHART box sits above the header text');
+    // Small canvases still keep everything on screen.
+    const s = H.hudLayout(320, 200, {});
+    assert.ok(s.bar.y >= 0 && s.starsY + 6 <= 200);
+});
+
+test('hudLayout drops the header tag in a band lane and keeps AUTO CHART at the bottom-left', () => {
+    const lay = H.hudLayout(1000, 600, { scoreHidden: true });
+    assert.equal(lay.showHeader, false);
+    assert.ok(lay.autoSolo.y > 600 * 0.9 && lay.autoSolo.x < 100);
+    assert.ok(lay.autoSolo.y + 13 <= 600);
+});

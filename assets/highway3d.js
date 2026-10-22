@@ -23,7 +23,7 @@
  *   noteState(i): engine noteState ('held' while the sustain is active, 'hit', 'miss' or null);
  *   state: engine getState(); header: "PART · INPUT · DIFFICULTY";
  *   sourceKind 'auto' shows AUTO CHART; message (optional): a status line drawn over the highway;
- *   scoreHidden (a band lane): no score, multiplier, streak, star power bar or stars on the HUD.
+ *   scoreHidden (a band lane): no score, multiplier, streak, star power bar, stars or header tag on the HUD.
  */
 (function (root, factory) {
     'use strict';
@@ -50,6 +50,27 @@
     const MISS_DIM = 0.3;
     const DROPPED_DIM = 0.45;
     const FONT = 'system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif';
+    // HUD positions (CSS px) for a w x h canvas. Everything sits in the bottom corners so it clears
+    // the player chrome (title / arrangement / tuning top-left, time and A/V top-right). A band lane
+    // (scoreHidden) drops the header tag, which the lane's own tag already covers. Pure: no DOM.
+    function hudLayout(w, h, opts) {
+        const scoreHidden = !!(opts && opts.scoreHidden);
+        const pad = 10, barH = 7, barW = 90;
+        const blockTop = h - pad - 70;
+        return {
+            pad,
+            showHeader: !scoreHidden,
+            header: { x: pad, y: h - pad },                       // baseline, left aligned
+            auto: { x: pad, y: h - pad - 29 },                      // box top (13px tall) above the header
+            autoSolo: { x: pad, y: h - pad - 13 },                 // ...and when no header is drawn
+            right: w - pad,
+            bar: { x: w - pad - barW, y: blockTop, w: barW, h: barH },
+            scoreY: blockTop + barH + 24,                          // baselines, right aligned
+            streakY: blockTop + barH + 41,
+            starsY: blockTop + barH + 56,                          // star centres
+        };
+    }
+
     const F_TAG = '600 11px ' + FONT, F_AUTO = '700 9px ' + FONT, F_SCORE = '700 20px ' + FONT;
     const F_SMALL = '600 12px ' + FONT, F_SOLO = '700 22px ' + FONT, F_MSG = '600 14px ' + FONT;
     const EMPTY = Object.freeze([]);
@@ -486,7 +507,8 @@
             const ctx = hctx;
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.clearRect(0, 0, cssW, cssH);
-            const pad = 10;
+            const lay = hudLayout(cssW, cssH, { scoreHidden });
+            const pad = lay.pad;
             const text = CSS.text;
             const ht = hudText;   // formatted strings, rebuilt only when their values change
             if (ht.score !== score) { ht.score = score; ht.scoreStr = score.toLocaleString('en-US'); }
@@ -503,43 +525,43 @@
 
             // Header tag and AUTO CHART.
             ctx.textAlign = 'left';
-            if (header) {
+            if (header && lay.showHeader) {
                 ctx.font = F_TAG;
                 ctx.fillStyle = text;
-                ctx.fillText(ht.headerStr, pad, pad + 10);
+                ctx.fillText(ht.headerStr, lay.header.x, lay.header.y);
             }
             if (auto) {
                 ctx.font = F_AUTO;
                 const tw = ctx.measureText('AUTO CHART').width;
-                const y = pad + (header ? 16 : 0);
+                const y = header && lay.showHeader ? lay.auto.y : lay.autoSolo.y;
                 ctx.fillStyle = text;
-                ctx.fillRect(pad, y, tw + 10, 13);
+                ctx.fillRect(lay.auto.x, y, tw + 10, 13);
                 ctx.fillStyle = CSS.background;
-                ctx.fillText('AUTO CHART', pad + 5, y + 10);
+                ctx.fillText('AUTO CHART', lay.auto.x + 5, y + 10);
             }
 
-            // Star power bar, score, multiplier x streak, stars (top right); none in a band lane.
-            const right = cssW - pad;
-            const barW = 90, barH = 7;
+            // Star power bar, score, multiplier x streak, stars (bottom right); none in a band lane.
+            const right = lay.right;
+            const barW = lay.bar.w, barH = lay.bar.h, barY = lay.bar.y;
             if (!scoreHidden) {
                 ctx.fillStyle = CSS.meterBack;
-                ctx.fillRect(right - barW, pad, barW, barH);
+                ctx.fillRect(right - barW, barY, barW, barH);
                 if (sp > 0) {
                     ctx.fillStyle = CSS.overdrive;
-                    ctx.fillRect(right - barW, pad, barW * sp, barH);
+                    ctx.fillRect(right - barW, barY, barW * sp, barH);
                 }
                 if (state) {
                     ctx.textAlign = 'right';
                     ctx.fillStyle = '#ffffff';
                     ctx.font = F_SCORE;
-                    ctx.fillText(ht.scoreStr, right, pad + barH + 24);
+                    ctx.fillText(ht.scoreStr, right, lay.scoreY);
                     ctx.font = F_SMALL;
                     ctx.fillStyle = spActive ? CSS.overdrive : text;
-                    ctx.fillText(ht.streakStr, right, pad + barH + 41);
+                    ctx.fillText(ht.streakStr, right, lay.streakY);
                     L.starFill(st, stars);
                     const r = 6, gap = 15;
                     for (let i = 0; i < 5; i++) {
-                        const cx = right - r - (4 - i) * gap, cy = pad + barH + 56;
+                        const cx = right - r - (4 - i) * gap, cy = lay.starsY;
                         drawStar(ctx, cx, cy, r);
                         ctx.fillStyle = CSS.meterBack;
                         ctx.fill();
@@ -618,5 +640,5 @@
         return { render, resize, destroy, dispose: destroy };
     }
 
-    return { createView };
+    return { createView, hudLayout };
 });
