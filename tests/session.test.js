@@ -192,6 +192,7 @@ test('forward play through a chart: all hit with perfect inputs scores full comb
     const hits = s.drainEvents().filter((e) => e.type === 'hit');
     assert.equal(hits.length, times.length);
     assert.equal(hits[0].noteType, 'strum');
+    for (const e of hits) assert.equal(e.offsetMs, Math.round(e.offset * 1000), 'hit timing in ms (+ = late)');
     assert.deepEqual(s.drainEvents(), []);
 });
 
