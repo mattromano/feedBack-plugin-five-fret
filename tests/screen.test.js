@@ -845,11 +845,11 @@ test('showAutoCharts reads the saved flag, default false', async (t) => {
 test('openControls returns to returnTo on Back', async (t) => {
     const env = setup(t);
     const api = env.win.feedBackFiveFret;
-    api.openControls({ returnTo: 'plugin-build_a_band' });
+    api.openControls({ returnTo: 'plugin-rockherosmith' });
     assert.deepEqual(env.shown, ['plugin-five_fret']);
     await openControls(env);
     env.dom['five-fret-controls-back'].fire('click');
-    assert.equal(env.shown[env.shown.length - 1], 'plugin-build_a_band');
+    assert.equal(env.shown[env.shown.length - 1], 'plugin-rockherosmith');
     await leaveControls(env);
     // Only for that visit: the next one (from Settings) goes home.
     await openControls(env);
@@ -1392,7 +1392,7 @@ test('a pinned lane\'s Start emits five_fret:band-pause and does not toggle play
     const p = named(seen, 'five_fret:band-pause');
     assert.equal(p.length, 1);   // the press, not the release
     assert.deepEqual(p[0].detail, { controllerKey: 'Xbox#1', canvas: cv });
-    // Paused too (Build-a-Band resumes on it).
+    // Paused too (RockHeroSmith resumes on it).
     r.draw(bundleAt(0, parts(), { isPlaying: false }));
     env.gi.button(9, true);
     assert.equal(named(seen, 'five_fret:band-pause').length, 2);

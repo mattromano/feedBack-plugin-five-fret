@@ -8,6 +8,9 @@ All notable changes to the 5-Fret plugin. The format follows
 ### Fixed
 - HUD moved to the bottom corners so it no longer overlaps the player's title, tuning and time; band lanes (score HUD hidden) no longer draw the header tag, and AUTO CHART sits bottom-left.
 
+### Changed
+- Docs and tests name RockHeroSmith (formerly Build-a-Band; screen `plugin-rockherosmith`).
+
 ## [0.2.0] - Unreleased
 
 ### Added

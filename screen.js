@@ -18,7 +18,7 @@
  * controller from setLane (once it is connected) until clearLane or destroy, paused or not; the claim
  * rule above is for unpinned renderers. A pinned renderer never mounts the panel or saves settings,
  * and its gamepad mode follows the controller's kind, not the saved setting. Its Start and a 1 s hold
- * of Back are bus events for Build-a-Band (five_fret:band-pause, five_fret:band-back-hold); it never
+ * of Back are bus events for RockHeroSmith (five_fret:band-pause, five_fret:band-back-hold); it never
  * calls togglePlay. Every instance (pinned or not) puts its judgments and star power on the bus as
  * five_fret:<type> (BAND_EVENTS), each with detail.canvas.
  *
@@ -58,7 +58,7 @@
     const EV_BINDINGS = 'five_fret:bindings-changed';   // { controllerKey }: a binding was saved
     const EV_SETTINGS = 'five_fret:settings-changed';   // settings.html saved a setting (showAutoCharts)
     const EV_OFFSET = 'five_fret:offset-changed';       // { controllerKey, offsetMs }: an input offset was saved
-    // Judgments and star power for Build-a-Band (engine event type -> bus name), from every instance's
+    // Judgments and star power for RockHeroSmith (engine event type -> bus name), from every instance's
     // draw. detail: the engine payload plus { canvas, controllerKey, partId, instrument, score, combo,
     // multiplier, spActive, resets } (see emitBandEvents).
     const BAND_EVENTS = Object.freeze({
@@ -66,7 +66,7 @@
         'sustain-end': 'five_fret:sustain-end', 'sp-phrase': 'five_fret:sp-phrase',
         'sp-ready': 'five_fret:sp-ready', 'sp-activate': 'five_fret:sp-activate', 'sp-end': 'five_fret:sp-end',
     });
-    // A band lane's Start, and Back held BACK_HOLD_S, go to Build-a-Band ({ controllerKey, canvas }):
+    // A band lane's Start, and Back held BACK_HOLD_S, go to RockHeroSmith ({ controllerKey, canvas }):
     // it pauses and offers to leave. A band lane never calls togglePlay itself.
     const EV_BAND_PAUSE = 'five_fret:band-pause';
     const EV_BAND_BACK_HOLD = 'five_fret:band-back-hold';
@@ -930,7 +930,7 @@
 
     // ── Band API (window.feedBackFiveFret), modelled on window.feedBackDrums ────
     //
-    // Build-a-Band pins one renderer per controller lane by its canvas. Pins, and hidden score HUDs,
+    // RockHeroSmith pins one renderer per controller lane by its canvas. Pins, and hidden score HUDs,
     // are kept per canvas, so they apply to an instance that inits on the canvas later.
 
     // profiles.js alone, on demand (listControllers / createMapper need no other asset).

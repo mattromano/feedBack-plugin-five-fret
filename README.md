@@ -7,7 +7,7 @@ song's 5-fret part with a game controller or a plastic guitar, judged and scored
 Status: in development. This version ships the scoring engine (`assets/engine.js`), controller
 profiles (`assets/profiles.js`), the tilted 3D highway view (`assets/highway3d.js`), the player
 renderer (`screen.js`, with `assets/session.js`), the controls screen (`screen.html`,
-`assets/controls.js`) and a band API for Build-a-Band (`window.feedBackFiveFret`).
+`assets/controls.js`) and a band API for RockHeroSmith (`window.feedBackFiveFret`).
 
 ## Scoring engine
 
@@ -95,7 +95,7 @@ The renderer (`window.feedBackViz_five_fret`, WebGL2) plays one part of the song
   the controls screen first, else a standard gamepad (which works out of the box), each in slot
   order. It holds the controller only while a 5-fret part is playing: paused, before playback, or on
   a song with no 5-fret part it lets go, so core's menus work (A plays/pauses, B goes back) and a
-  controller-only player can always leave. Start pauses (in a band lane, Build-a-Band does: see
+  controller-only player can always leave. Start pauses (in a band lane, RockHeroSmith does: see
   Band API). If it unplugs, the song keeps going without
   input and the highway says "Controller disconnected" until it is back.
 - **Timing:** inputs are judged on the highway's chart clock, minus the controller's input offset.
@@ -156,7 +156,7 @@ plastic guitar set up mid-song is claimed straight away. The pure helpers are in
 
 ## Band API
 
-`window.feedBackFiveFret` (`version: 1`) lets Build-a-Band run one 5-fret lane per controller, the
+`window.feedBackFiveFret` (`version: 1`) lets RockHeroSmith run one 5-fret lane per controller, the
 way it uses `window.feedBackDrums`. Lanes are keyed by their highway canvas, so a call made before a
 renderer inits on the canvas (or across a re-init) still applies.
 
@@ -171,7 +171,7 @@ ff.clearLane(canvas);
 await ff.listControllers();              // [{ index, controllerKey, id, mapping, name, kind, connected, claimedBy }]
 await ff.createMapper(controllerKey);    // { map(ev) -> [{ action, value }] } | null
 ff.showAutoCharts();                     // the saved "show auto charts" flag, default false
-ff.openControls({ returnTo: 'plugin-build_a_band' });
+ff.openControls({ returnTo: 'plugin-rockherosmith' });
 ```
 
 - **`setLane`** returns false (changing nothing) on bad arguments; calling it again updates the lane.
@@ -209,7 +209,7 @@ without events costs nothing, and a listener that throws never stops the draw.
 **Back** (button 8 on standard-mapped pads; bindings have no back action, so button 8 for every
 controller whose binding leaves it free) for 1 s emits `five_fret:band-back-hold` once per hold (a
 release before 1 s cancels it). Both carry `detail { controllerKey, canvas }`, and both work while
-paused. Build-a-Band toggles pause and opens its leave prompt. Unpinned renderers keep Start →
+paused. RockHeroSmith toggles pause and opens its leave prompt. Unpinned renderers keep Start →
 `window.togglePlay()`.
 
 ## Tests
