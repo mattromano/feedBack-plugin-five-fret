@@ -40,7 +40,7 @@
     'use strict';
 
     const PLUGIN_ID = 'five_fret';
-    const ASSET_VERSION = '0.2.1';   // cache-buster for the lazily loaded files: bump with releases
+    const ASSET_VERSION = '0.3.0';   // cache-buster for the lazily loaded files: bump with releases
     const THREE_URL = '/static/vendor/three/three.module.min.js';
     const PLUGIN_ASSETS = '/api/plugins/' + PLUGIN_ID + '/assets/';
     // Load order matters: session.js needs engine.js, highway3d.js needs layout.js.
@@ -330,6 +330,7 @@
         const frame = {
             now: 0, notes: EMPTY, beats: EMPTY, starPower: EMPTY, solos: EMPTY, pressed: NO_PRESSED, whammy: 0,
             noteState, state: null, lefty: false, header: '', sourceKind: '', message: null, scoreHidden: false,
+            events: EMPTY, wallNow: 0,
         };
 
         function countKeys(o) {
@@ -772,8 +773,13 @@
                 statusArgs.hasController = !!handle || (!wantClaim && readyKind !== null);
                 statusArgs.connected = handle ? connected : true;
                 frame.message = H.statusMessage(statusArgs);
+                // This draw's engine events go to the view (hit / miss effects) and then to the bus.
+                const events = session ? session.drainEvents() : EMPTY;
+                frame.events = events;
+                frame.wallNow = lastFrameT * 1000;
                 view.render(frame);
-                if (session) emitBandEvents(session.drainEvents(), frame.state);
+                frame.events = EMPTY;
+                if (session) emitBandEvents(events, frame.state);
                 // A band lane's Back held BACK_HOLD_S: once per hold (a release before then cancels it).
                 if (pin && handle && !backFired && backDownAt === backDownAt && lastFrameT - backDownAt >= BACK_HOLD_S) {
                     backFired = true;
@@ -1055,6 +1061,23 @@
         },
         // Plan 5's "show auto charts" flag (five_fret.settings.v1), default false.
         showAutoCharts: () => _showAutoCharts(),
+        // Play a library song on one 5-fret part ('guitar' | 'rhythm' | 'bass'), optionally at a difficulty
+        // ('easy' | 'medium' | 'hard' | 'expert'), in the main player: they become the saved Part and
+        // Difficulty settings (as picking them in the panel does) and the 5-Fret view is
+        // set for this play only (core's feedBack.ui.playSongAs). `filename` is unencoded. false on a
+        // bad part or no player.
+        playOnPart(filename, part, difficulty) {
+            if (typeof filename !== 'string' || !filename || !Object.prototype.hasOwnProperty.call(LANE_PARTS, part)) return false;
+            if (difficulty !== undefined && !Object.prototype.hasOwnProperty.call(DIFFICULTY_LABELS, difficulty)) return false;
+            _saveSetting('part', part);
+            if (difficulty !== undefined) _saveSetting('difficulty', difficulty);
+            const ui = window.feedBack && window.feedBack.ui;
+            if (ui && typeof ui.playSongAs === 'function') return ui.playSongAs(filename, { viz: PLUGIN_ID }) !== false;
+            if (typeof window.playSong !== 'function') return false;
+            if (typeof window.setViz === 'function') window.setViz(PLUGIN_ID);
+            window.playSong(encodeURIComponent(filename));
+            return true;
+        },
         // Show the controls screen; its Back button goes to returnTo (default 'home') for this visit.
         openControls(opts) {
             const to = opts && typeof opts.returnTo === 'string' && opts.returnTo ? opts.returnTo : 'home';
@@ -1063,6 +1086,76 @@
             window.showScreen(SCREEN_ID);
         },
     };
+
+    // A setting (part, difficulty), saved (five_fret.settings.v1) and applied to the normal player's instance.
+    function _saveSetting(key, value) {
+        const P = window.FiveFretProfiles;
+        if (P && typeof P.saveSettings === 'function') P.saveSettings({ [key]: value });
+        else {
+            try {
+                const raw = localStorage.getItem(SETTINGS_KEY);
+                const v = raw ? JSON.parse(raw) : null;
+                localStorage.setItem(SETTINGS_KEY, JSON.stringify(Object.assign(v && typeof v === 'object' ? v : {}, { [key]: value })));
+            } catch (_) { /* storage blocked: it applies to the live instance only */ }
+        }
+        if (_panelOwner) _panelOwner.applySetting(key, value);
+    }
+    // The saved difficulty (five_fret.settings.v1), default expert.
+    function _savedDifficulty() {
+        try {
+            const raw = localStorage.getItem(SETTINGS_KEY);
+            const v = raw ? JSON.parse(raw) : null;
+            const d = v && typeof v === 'object' ? v.difficulty : null;
+            return Object.prototype.hasOwnProperty.call(DIFFICULTY_LABELS, d) ? d : 'expert';
+        } catch (_) { return 'expert'; }
+    }
+
+    // ── "Play as" entries (core's libraryCardActions, placement 'play-as') ──────────
+    //
+    // One row per 5-fret instrument the song has: a real chart, or an auto chart while "Show auto
+    // charts" is on (song.five_fret_parts: ["guitar:chart", "bass:auto", ...]).
+    const PLAY_AS_PARTS = [['guitar', '5-Fret Guitar'], ['rhythm', '5-Fret Rhythm'], ['bass', '5-Fret Bass']];
+    function playAsVariants(song) {
+        const kind = Object.create(null);
+        for (const t of (song && Array.isArray(song.five_fret_parts)) ? song.five_fret_parts : []) {
+            const [inst, src] = String(t).split(':');
+            if (src === 'chart') kind[inst] = 'chart';
+            else if (src === 'auto' && !kind[inst]) kind[inst] = 'auto';
+        }
+        const showAuto = _showAutoCharts();
+        return PLAY_AS_PARTS.filter(([inst]) => kind[inst] === 'chart' || (kind[inst] === 'auto' && showAuto))
+            .map(([inst, label]) => ({ key: inst, label, hint: kind[inst] === 'auto' ? 'auto chart' : 'controller' }));
+    }
+    (function registerPlayAs() {
+        const reg = window.feedBack && window.feedBack.libraryCardActions;
+        if (!reg || typeof reg.register !== 'function' || window.__fiveFretPlayAs) return;
+        window.__fiveFretPlayAs = true;
+        reg.register({
+            id: 'five_fret.play-as', pluginId: PLUGIN_ID, label: '5-Fret', group: 'Rock Band / Guitar Hero',
+            placement: 'play-as', order: 40,
+            applies: (song) => !!(song && song.filename),
+            variants: playAsVariants,
+            // The difficulty, asked after the part (charts without a level get one made from Expert).
+            choices: () => ({
+                title: 'Difficulty', default: _savedDifficulty(),
+                items: Object.keys(DIFFICULTY_LABELS).map((k) => ({ key: k, label: DIFFICULTY_LABELS[k] })),
+            }),
+            // With RockHeroSmith installed, the song plays on its stage as a one-player band (stems
+            // drop out on misses, its HUD and results); the choices are still saved as the defaults.
+            run: (song, ctx) => {
+                const part = ctx && ctx.variant;
+                const difficulty = ctx && ctx.choice != null ? ctx.choice : undefined;
+                const rhs = window.rockHeroSmith;
+                if (rhs && rhs.version === 1 && typeof rhs.playSolo === 'function'
+                    && Object.prototype.hasOwnProperty.call(LANE_PARTS, part)) {
+                    _saveSetting('part', part);
+                    if (Object.prototype.hasOwnProperty.call(DIFFICULTY_LABELS, difficulty)) _saveSetting('difficulty', difficulty);
+                    return rhs.playSolo(song, { kind: 'five_fret', part, difficulty });
+                }
+                return window.feedBackFiveFret.playOnPart(song.filename, part, difficulty);
+            },
+        });
+    })();
 
     function factory() { return createRenderer(); }
     factory.contextType = 'webgl2';

@@ -7,7 +7,8 @@
  *   createSession({ chart, instrument, difficulty, gamepadMode, offsetMs, pressed?, now? }) ->
  *     { input(action, value, tSong), update(tSong), releaseAll(tSong), pressedFrets(), whammy(), state(), noteState(i),
  *       drainEvents(), notes, difficulty, offsetMs, resets, starPower, starThresholds }
- *   drainEvents(): engine events as { type: event name, ...payload } (a payload's note type is noteType).
+ *   drainEvents(): engine events as { type: event name, ...payload } (a payload's note type is noteType;
+ *   a hit also carries offsetMs, its timing in ms, + = late).
  *   chart: a bundle.fiveFretParts entry plus `beats` and `sections` ({ notes, levels, starPower, solos,
  *   sourceKind, beats, sections }). An auto part (sourceKind 'auto') with no phrases gets them from
  *   autoStarPower (one per section of 8+ notes, over its last 2 measures); starPower is what is played.
@@ -252,6 +253,8 @@
                 const ev = Object.assign({}, p);
                 if (p && p.type !== undefined) ev.noteType = p.type;
                 ev.type = name;
+                // A hit's timing in ms (+ = late), for the early / late meter and the timing colours.
+                if (name === 'hit' && Number.isFinite(p && p.offset)) ev.offsetMs = Math.round(p.offset * 1000);
                 events.push(ev);
                 if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS);
             });

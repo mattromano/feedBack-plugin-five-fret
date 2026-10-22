@@ -140,18 +140,36 @@ test('createView throws a clear error without WebGL2', () => {
     assert.throws(() => H.createView({}, null), /canvas/);
 });
 
-test('hudLayout keeps the HUD in the bottom corners, clear of the player chrome', () => {
-    const lay = H.hudLayout(1000, 600, { scoreHidden: false });
+test('hudLayout: wide canvases put the score column right of the track and the multiplier left of it', () => {
+    const lay = H.hudLayout(1280, 720, { scoreHidden: false, trackLeft: 450, trackRight: 830, strikeY: 620 });
+    assert.equal(lay.wide, true);
     assert.equal(lay.showHeader, true);
-    assert.ok(lay.header.y > 600 * 0.9 && lay.header.x < 100, 'header tag bottom-left');
-    assert.ok(lay.bar.y > 600 * 0.8, 'score block starts in the lower part');
-    assert.equal(lay.right, 990);
-    assert.ok(lay.starsY + 6 <= 600, 'stars stay on the canvas');
-    assert.ok(lay.bar.y < lay.scoreY && lay.scoreY < lay.streakY && lay.streakY < lay.starsY, 'block order');
+    assert.ok(lay.header.y > 720 * 0.9 && lay.header.x < 100, 'header tag bottom-left');
+    assert.ok(lay.col.x >= 830, 'score column right of the track');
+    assert.ok(lay.col.x + lay.col.w <= 1280, 'and on the canvas');
+    assert.ok(lay.mult.x + lay.mult.r <= 450, 'multiplier ring left of the track');
+    assert.ok(lay.mult.x - lay.mult.r >= 0);
+    assert.ok(lay.col.y >= 64 && lay.streakY - 30 * lay.scale >= 64, 'clear of the player chrome along the top');
+    assert.ok(lay.meterY < lay.scoreY && lay.scoreY < lay.starsY && lay.starsY < lay.accY && lay.accY < lay.timingY, 'column order');
+    assert.ok(lay.timingY + 40 * lay.scale <= 720, 'timing meter on the canvas');
+    assert.ok(lay.streakY < lay.streakLabelY && lay.streakLabelY < lay.mult.y && lay.mult.y < lay.fullComboY);
     assert.ok(lay.auto.y + 13 < lay.header.y - 10, 'AUTO CHART box sits above the header text');
-    // Small canvases still keep everything on screen.
+});
+
+test('hudLayout: narrow lanes get a compact, scaled HUD in the bottom corners', () => {
+    const lay = H.hudLayout(360, 640, { trackLeft: 10, trackRight: 350, strikeY: 560 });
+    assert.equal(lay.wide, false);
+    assert.equal(lay.compact, true);
+    assert.equal(lay.timingY, null, 'no timing meter');
+    assert.ok(lay.scale < 1);
+    assert.ok(lay.col.x >= 0 && lay.col.x + lay.col.w <= 360);
+    assert.ok(lay.col.y + lay.col.h <= 640 && lay.col.y > 320, 'bottom-right');
+    assert.ok(lay.mult.x - lay.mult.r >= 0 && lay.mult.x < 180, 'bottom-left');
+    assert.ok(lay.fullComboY < lay.auto.y, 'clear of AUTO CHART and the header');
+    // Tiny canvases still keep everything on screen.
     const s = H.hudLayout(320, 200, {});
-    assert.ok(s.bar.y >= 0 && s.starsY + 6 <= 200);
+    assert.ok(s.col.y >= 0 && s.starsY + 11 * s.scale <= 200);
+    assert.ok(s.streakY - 30 * s.scale >= 0);
 });
 
 test('hudLayout drops the header tag in a band lane and keeps AUTO CHART at the bottom-left', () => {

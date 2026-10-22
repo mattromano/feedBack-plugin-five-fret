@@ -3,7 +3,34 @@
 All notable changes to the 5-Fret plugin. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow `plugin.json`.
 
+## [0.3.0] - Unreleased
+
+### Changed
+- The 3D highway was rebuilt to look and play like the drums plugin's Rock Band-style highway: a
+  scrolling five-lane track with fog, a rim light, rail glow strips and clearer dividers; rounded fret
+  targets that light while held; bevelled glowing gems (distinct strum, HOPO, tap and open styles,
+  star power gems in the star power colour); and sustain tails that glow and throw sparks while held.
+- Hits flash their lanes in the timing colour (on time / early / late) with a ring, a flare and a spark
+  burst that grows with the streak, and hit gems carry on past the strike line and fade. Misses flash
+  red and the gem trails red. Overstrums flash the strike line red, and breaking a 3+ streak washes red.
+- The HUD now has a star power meter (READY / ACTIVE), a big score, stars, accuracy, an early / late
+  timing meter, a multiplier ring with progress, a big NOTE STREAK, FULL COMBO, score pops, combo rings,
+  streak bursts and toasts. It sits beside the track when there is room and goes compact in narrow lanes.
+- Band lanes (score HUD hidden) keep every highway effect and the streak flashes, without the score
+  panels.
+
+### Added
+- `screen.js` passes each draw's engine events (`frame.events`) and wall clock (`frame.wallNow`) to the
+  view. They still go to the bus as before.
+- Session hit events carry `offsetMs`, the hit's timing in ms (+ = late).
+- `assets/highway3d.js` exports `HIT_FX`, `trailAlpha`, `trailZ`, `timingHex`, `sparkCount`,
+  `multiplierColor`, `hudModel` and `view.fxSnapshot()`. `tests/highway3d.test.js` drives the scene
+  with a real session on a stub three.js.
+
 ## [0.2.1] - Unreleased
+
+### Added
+- **Play as** entries for core's library menus (`libraryCardActions`, placement `play-as`): 5-Fret Guitar / Rhythm / Bass for each part the song has (auto charts only while "Show auto charts" is on), then the difficulty, and `window.feedBackFiveFret.playOnPart(filename, part, difficulty?)`.
 
 ### Fixed
 - HUD moved to the bottom corners so it no longer overlaps the player's title, tuning and time; band lanes (score HUD hidden) no longer draw the header tag, and AUTO CHART sits bottom-left.

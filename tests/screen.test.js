@@ -178,7 +178,7 @@ function setup(t, opts) {
                     render(f) {
                         renders.push({ message: f.message, header: f.header, notes: f.notes.length, pressed: f.pressed.slice(),
                             lefty: f.lefty, hits: f.state ? f.state.notesHit : null, now: f.now, scoreHidden: f.scoreHidden, canvas: cv,
-                            starPower: f.starPower });
+                            starPower: f.starPower, events: f.events ? f.events.map((e) => e.type) : null, wallNow: f.wallNow });
                     },
                     resize() {},
                     destroy() { v.destroyed = true; },
@@ -194,6 +194,7 @@ function setup(t, opts) {
         showScreen: (id) => shown.push(id),
     };
     win.togglePlay = () => { win.togglePlays++; };
+    if (opts.cardActions) win.feedBack.libraryCardActions = opts.cardActions;
     const doc = { createElement: fakeElement, getElementById: (id) => dom[id] || null, querySelector: () => null, querySelectorAll: () => [], head: fakeElement('head') };
     for (const [k, v] of [['window', win], ['document', doc], ['localStorage', storage]]) {
         Object.defineProperty(global, k, { value: v, configurable: true, writable: true });
@@ -1254,6 +1255,23 @@ test('a hit emits five_fret:hit with canvas, controllerKey, points, score, combo
     assert.equal(h2[0].detail.controllerKey, 'Xbox#1');
 });
 
+test('the view gets every draw\'s engine events (frame.events) and a wall clock, before the bus does', async (t) => {
+    const env = setup(t);
+    const seen = recordBandEvents(env);
+    const { r } = await pinnedLane(env);
+    const ff = parts();
+    drawTo(r, ff, 0.8, 1);
+    assert.ok(env.renders.every((f) => Array.isArray(f.events) && f.events.length === 0), 'no events before the hit');
+    env.gi.button(6, true);
+    r.draw(bundleAt(1 + FRAME, ff));
+    const last = env.last();
+    assert.deepEqual(last.events, ['hit']);
+    assert.ok(Number.isFinite(last.wallNow) && last.wallNow > 0);
+    assert.equal(named(seen, 'five_fret:hit').length, 1, 'the bus still gets it');
+    r.draw(bundleAt(1 + 2 * FRAME, ff));
+    assert.deepEqual(env.last().events, [], 'drained once');
+});
+
 test('a missed note emits five_fret:miss; an overstrum emits five_fret:overstrum', async (t) => {
     const env = setup(t);
     const seen = recordBandEvents(env);
@@ -1482,4 +1500,78 @@ test('an auto part draws and plays star power phrases from the song\'s sections'
     // A chart part keeps its own (none here), whatever the sections.
     r.draw(bundleAt(2 * FRAME, parts(), { sections: [{ time: 0, name: 'Intro' }] }));
     assert.deepEqual(env.last().starPower, []);
+});
+
+// ── "Play as" (core libraryCardActions, placement 'play-as') ───────────────────────
+
+function fakeCardActions() {
+    const actions = [];
+    return { actions, register(spec) { actions.push(spec); return () => {}; } };
+}
+
+test('registers a play-as entry with one row per 5-fret instrument the song has', (t) => {
+    const reg = fakeCardActions();
+    const env = setup(t, { cardActions: reg });
+    assert.equal(reg.actions.length, 1);
+    const a = reg.actions[0];
+    assert.equal(a.id, 'five_fret.play-as');
+    assert.equal(a.placement, 'play-as');
+    const song = { filename: 'x.sloppak', five_fret_parts: ['bass:auto', 'guitar:chart', 'rhythm:auto', 'rhythm:chart'] };
+    assert.deepEqual(a.variants(song).map((v) => v.key), ['guitar', 'rhythm']);
+    env.storage.setItem('five_fret.settings.v1', JSON.stringify({ showAutoCharts: true }));
+    assert.deepEqual(a.variants(song).map((v) => [v.key, v.hint]), [['guitar', 'controller'], ['rhythm', 'controller'], ['bass', 'auto chart']]);
+    assert.deepEqual(a.variants({ filename: 'y' }), []);
+});
+
+test('playOnPart saves the part and plays with the 5-Fret view for that play', (t) => {
+    const reg = fakeCardActions();
+    const env = setup(t, { cardActions: reg });
+    const plays = [];
+    env.win.feedBack.ui.playSongAs = (fn, o) => { plays.push([fn, o]); return true; };
+    assert.equal(env.win.feedBackFiveFret.playOnPart('a b.sloppak', 'bass'), true);
+    assert.deepEqual(plays, [['a b.sloppak', { viz: 'five_fret' }]]);
+    assert.equal(P.loadSettings().part, 'bass');
+    assert.equal(env.win.feedBackFiveFret.playOnPart('a.sloppak', 'keys'), false);
+    // The registry entry plays the chosen variant.
+    reg.actions[0].run({ filename: 'c.sloppak' }, { variant: 'rhythm' });
+    assert.deepEqual(plays[1], ['c.sloppak', { viz: 'five_fret' }]);
+    assert.equal(P.loadSettings().part, 'rhythm');
+});
+
+test('playOnPart updates the live panel instance', async (t) => {
+    const env = setup(t);
+    env.win.feedBack.ui.playSongAs = () => true;
+    const r = await started(env);
+    env.win.feedBackFiveFret.playOnPart('a.sloppak', 'bass');
+    assert.equal(r.getSetting('part'), 'bass');
+});
+
+test('play-as asks for the difficulty (saved one by default) and playOnPart saves it', (t) => {
+    const reg = fakeCardActions();
+    const env = setup(t, { cardActions: reg });
+    const plays = [];
+    env.win.feedBack.ui.playSongAs = (fn, o) => { plays.push([fn, o]); return true; };
+    const a = reg.actions[0];
+    assert.deepEqual(a.choices().items.map((i) => i.key), ['easy', 'medium', 'hard', 'expert']);
+    assert.equal(a.choices().default, 'expert');
+    a.run({ filename: 'x.sloppak' }, { variant: 'guitar', choice: 'medium' });
+    assert.deepEqual(P.loadSettings().part, 'guitar');
+    assert.equal(P.loadSettings().difficulty, 'medium');
+    assert.equal(a.choices().default, 'medium');
+    assert.equal(plays.length, 1);
+    assert.equal(env.win.feedBackFiveFret.playOnPart('x.sloppak', 'guitar', 'insane'), false);
+    assert.equal(plays.length, 1);
+});
+
+test('with RockHeroSmith installed, play-as plays solo on its stage (and still saves the choices)', (t) => {
+    const reg = fakeCardActions();
+    const env = setup(t, { cardActions: reg });
+    const solo = [];
+    env.win.feedBack.ui.playSongAs = () => { throw new Error('should not play directly'); };
+    env.win.rockHeroSmith = { version: 1, playSolo: (item, o) => { solo.push([item.filename, o]); return Promise.resolve('started'); } };
+    const song = { filename: 'x.sloppak', five_fret_parts: ['bass:chart'] };
+    reg.actions[0].run(song, { variant: 'bass', choice: 'hard' });
+    assert.deepEqual(solo, [['x.sloppak', { kind: 'five_fret', part: 'bass', difficulty: 'hard' }]]);
+    assert.equal(P.loadSettings().part, 'bass');
+    assert.equal(P.loadSettings().difficulty, 'hard');
 });
