@@ -330,6 +330,7 @@
         const frame = {
             now: 0, notes: EMPTY, beats: EMPTY, starPower: EMPTY, solos: EMPTY, pressed: NO_PRESSED, whammy: 0,
             noteState, state: null, lefty: false, header: '', sourceKind: '', message: null, scoreHidden: false,
+            events: EMPTY, wallNow: 0,
         };
 
         function countKeys(o) {
@@ -772,8 +773,13 @@
                 statusArgs.hasController = !!handle || (!wantClaim && readyKind !== null);
                 statusArgs.connected = handle ? connected : true;
                 frame.message = H.statusMessage(statusArgs);
+                // This draw's engine events go to the view (hit / miss effects) and then to the bus.
+                const events = session ? session.drainEvents() : EMPTY;
+                frame.events = events;
+                frame.wallNow = lastFrameT * 1000;
                 view.render(frame);
-                if (session) emitBandEvents(session.drainEvents(), frame.state);
+                frame.events = EMPTY;
+                if (session) emitBandEvents(events, frame.state);
                 // A band lane's Back held BACK_HOLD_S: once per hold (a release before then cancels it).
                 if (pin && handle && !backFired && backDownAt === backDownAt && lastFrameT - backDownAt >= BACK_HOLD_S) {
                     backFired = true;

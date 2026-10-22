@@ -178,7 +178,7 @@ function setup(t, opts) {
                     render(f) {
                         renders.push({ message: f.message, header: f.header, notes: f.notes.length, pressed: f.pressed.slice(),
                             lefty: f.lefty, hits: f.state ? f.state.notesHit : null, now: f.now, scoreHidden: f.scoreHidden, canvas: cv,
-                            starPower: f.starPower });
+                            starPower: f.starPower, events: f.events ? f.events.map((e) => e.type) : null, wallNow: f.wallNow });
                     },
                     resize() {},
                     destroy() { v.destroyed = true; },
@@ -1253,6 +1253,23 @@ test('a hit emits five_fret:hit with canvas, controllerKey, points, score, combo
     assert.equal(h2.length, 1);
     assert.equal(h2[0].detail.canvas, cv2);
     assert.equal(h2[0].detail.controllerKey, 'Xbox#1');
+});
+
+test('the view gets every draw\'s engine events (frame.events) and a wall clock, before the bus does', async (t) => {
+    const env = setup(t);
+    const seen = recordBandEvents(env);
+    const { r } = await pinnedLane(env);
+    const ff = parts();
+    drawTo(r, ff, 0.8, 1);
+    assert.ok(env.renders.every((f) => Array.isArray(f.events) && f.events.length === 0), 'no events before the hit');
+    env.gi.button(6, true);
+    r.draw(bundleAt(1 + FRAME, ff));
+    const last = env.last();
+    assert.deepEqual(last.events, ['hit']);
+    assert.ok(Number.isFinite(last.wallNow) && last.wallNow > 0);
+    assert.equal(named(seen, 'five_fret:hit').length, 1, 'the bus still gets it');
+    r.draw(bundleAt(1 + 2 * FRAME, ff));
+    assert.deepEqual(env.last().events, [], 'drained once');
 });
 
 test('a missed note emits five_fret:miss; an overstrum emits five_fret:overstrum', async (t) => {
