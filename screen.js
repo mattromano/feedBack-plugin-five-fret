@@ -1055,6 +1055,20 @@
         },
         // Plan 5's "show auto charts" flag (five_fret.settings.v1), default false.
         showAutoCharts: () => _showAutoCharts(),
+        // Play a library song on one 5-fret part ('guitar' | 'rhythm' | 'bass') in the main player: the
+        // part becomes the saved Part setting (as picking it in the panel does) and the 5-Fret view is
+        // set for this play only (core's feedBack.ui.playSongAs). `filename` is unencoded. false on a
+        // bad part or no player.
+        playOnPart(filename, part) {
+            if (typeof filename !== 'string' || !filename || !Object.prototype.hasOwnProperty.call(LANE_PARTS, part)) return false;
+            _savePart(part);
+            const ui = window.feedBack && window.feedBack.ui;
+            if (ui && typeof ui.playSongAs === 'function') return ui.playSongAs(filename, { viz: PLUGIN_ID }) !== false;
+            if (typeof window.playSong !== 'function') return false;
+            if (typeof window.setViz === 'function') window.setViz(PLUGIN_ID);
+            window.playSong(encodeURIComponent(filename));
+            return true;
+        },
         // Show the controls screen; its Back button goes to returnTo (default 'home') for this visit.
         openControls(opts) {
             const to = opts && typeof opts.returnTo === 'string' && opts.returnTo ? opts.returnTo : 'home';
@@ -1063,6 +1077,49 @@
             window.showScreen(SCREEN_ID);
         },
     };
+
+    // The Part setting, saved (five_fret.settings.v1) and applied to the normal player's instance.
+    function _savePart(part) {
+        const P = window.FiveFretProfiles;
+        if (P && typeof P.saveSettings === 'function') P.saveSettings({ part });
+        else {
+            try {
+                const raw = localStorage.getItem(SETTINGS_KEY);
+                const v = raw ? JSON.parse(raw) : null;
+                localStorage.setItem(SETTINGS_KEY, JSON.stringify(Object.assign(v && typeof v === 'object' ? v : {}, { part })));
+            } catch (_) { /* storage blocked: the part applies to the live instance only */ }
+        }
+        if (_panelOwner) _panelOwner.applySetting('part', part);
+    }
+
+    // ── "Play as" entries (core's libraryCardActions, placement 'play-as') ──────────
+    //
+    // One row per 5-fret instrument the song has: a real chart, or an auto chart while "Show auto
+    // charts" is on (song.five_fret_parts: ["guitar:chart", "bass:auto", ...]).
+    const PLAY_AS_PARTS = [['guitar', '5-Fret Guitar'], ['rhythm', '5-Fret Rhythm'], ['bass', '5-Fret Bass']];
+    function playAsVariants(song) {
+        const kind = Object.create(null);
+        for (const t of (song && Array.isArray(song.five_fret_parts)) ? song.five_fret_parts : []) {
+            const [inst, src] = String(t).split(':');
+            if (src === 'chart') kind[inst] = 'chart';
+            else if (src === 'auto' && !kind[inst]) kind[inst] = 'auto';
+        }
+        const showAuto = _showAutoCharts();
+        return PLAY_AS_PARTS.filter(([inst]) => kind[inst] === 'chart' || (kind[inst] === 'auto' && showAuto))
+            .map(([inst, label]) => ({ key: inst, label, hint: kind[inst] === 'auto' ? 'auto chart' : 'controller' }));
+    }
+    (function registerPlayAs() {
+        const reg = window.feedBack && window.feedBack.libraryCardActions;
+        if (!reg || typeof reg.register !== 'function' || window.__fiveFretPlayAs) return;
+        window.__fiveFretPlayAs = true;
+        reg.register({
+            id: 'five_fret.play-as', pluginId: PLUGIN_ID, label: '5-Fret', group: 'Rock Band / Guitar Hero',
+            placement: 'play-as', order: 40,
+            applies: (song) => !!(song && song.filename),
+            variants: playAsVariants,
+            run: (song, ctx) => window.feedBackFiveFret.playOnPart(song.filename, ctx && ctx.variant),
+        });
+    })();
 
     function factory() { return createRenderer(); }
     factory.contextType = 'webgl2';

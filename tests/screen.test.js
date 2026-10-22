@@ -194,6 +194,7 @@ function setup(t, opts) {
         showScreen: (id) => shown.push(id),
     };
     win.togglePlay = () => { win.togglePlays++; };
+    if (opts.cardActions) win.feedBack.libraryCardActions = opts.cardActions;
     const doc = { createElement: fakeElement, getElementById: (id) => dom[id] || null, querySelector: () => null, querySelectorAll: () => [], head: fakeElement('head') };
     for (const [k, v] of [['window', win], ['document', doc], ['localStorage', storage]]) {
         Object.defineProperty(global, k, { value: v, configurable: true, writable: true });
@@ -1482,4 +1483,48 @@ test('an auto part draws and plays star power phrases from the song\'s sections'
     // A chart part keeps its own (none here), whatever the sections.
     r.draw(bundleAt(2 * FRAME, parts(), { sections: [{ time: 0, name: 'Intro' }] }));
     assert.deepEqual(env.last().starPower, []);
+});
+
+// ── "Play as" (core libraryCardActions, placement 'play-as') ───────────────────────
+
+function fakeCardActions() {
+    const actions = [];
+    return { actions, register(spec) { actions.push(spec); return () => {}; } };
+}
+
+test('registers a play-as entry with one row per 5-fret instrument the song has', (t) => {
+    const reg = fakeCardActions();
+    const env = setup(t, { cardActions: reg });
+    assert.equal(reg.actions.length, 1);
+    const a = reg.actions[0];
+    assert.equal(a.id, 'five_fret.play-as');
+    assert.equal(a.placement, 'play-as');
+    const song = { filename: 'x.sloppak', five_fret_parts: ['bass:auto', 'guitar:chart', 'rhythm:auto', 'rhythm:chart'] };
+    assert.deepEqual(a.variants(song).map((v) => v.key), ['guitar', 'rhythm']);
+    env.storage.setItem('five_fret.settings.v1', JSON.stringify({ showAutoCharts: true }));
+    assert.deepEqual(a.variants(song).map((v) => [v.key, v.hint]), [['guitar', 'controller'], ['rhythm', 'controller'], ['bass', 'auto chart']]);
+    assert.deepEqual(a.variants({ filename: 'y' }), []);
+});
+
+test('playOnPart saves the part and plays with the 5-Fret view for that play', (t) => {
+    const reg = fakeCardActions();
+    const env = setup(t, { cardActions: reg });
+    const plays = [];
+    env.win.feedBack.ui.playSongAs = (fn, o) => { plays.push([fn, o]); return true; };
+    assert.equal(env.win.feedBackFiveFret.playOnPart('a b.sloppak', 'bass'), true);
+    assert.deepEqual(plays, [['a b.sloppak', { viz: 'five_fret' }]]);
+    assert.equal(P.loadSettings().part, 'bass');
+    assert.equal(env.win.feedBackFiveFret.playOnPart('a.sloppak', 'keys'), false);
+    // The registry entry plays the chosen variant.
+    reg.actions[0].run({ filename: 'c.sloppak' }, { variant: 'rhythm' });
+    assert.deepEqual(plays[1], ['c.sloppak', { viz: 'five_fret' }]);
+    assert.equal(P.loadSettings().part, 'rhythm');
+});
+
+test('playOnPart updates the live panel instance', async (t) => {
+    const env = setup(t);
+    env.win.feedBack.ui.playSongAs = () => true;
+    const r = await started(env);
+    env.win.feedBackFiveFret.playOnPart('a.sloppak', 'bass');
+    assert.equal(r.getSetting('part'), 'bass');
 });

@@ -172,7 +172,15 @@ await ff.listControllers();              // [{ index, controllerKey, id, mapping
 await ff.createMapper(controllerKey);    // { map(ev) -> [{ action, value }] } | null
 ff.showAutoCharts();                     // the saved "show auto charts" flag, default false
 ff.openControls({ returnTo: 'plugin-build_a_band' });
+ff.playOnPart('song.sloppak', 'bass');   // main player: that part, 5-Fret view for this play only
 ```
+
+- **`playOnPart(filename, part)`** plays a library song (unencoded filename) in the main player on
+  one part (`guitar` | `rhythm` | `bass`): the part becomes the saved Part setting, as picking it in
+  the 5-Fret panel does, and core's `feedBack.ui.playSongAs` sets the 5-Fret view for that play only.
+  The plugin uses it for its **Play as** entries (core `libraryCardActions`, placement `play-as`):
+  one row per instrument the song has a 5-fret chart for (auto charts only while "Show auto charts"
+  is on), in the Songs table's row menu and the card ⋮ "Play as…".
 
 - **`setLane`** returns false (changing nothing) on bad arguments; calling it again updates the lane.
   `part` is `guitar` | `rhythm` | `bass` and is played exactly: a song without it shows "No 5-fret chart
