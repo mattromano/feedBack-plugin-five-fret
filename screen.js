@@ -1055,13 +1055,16 @@
         },
         // Plan 5's "show auto charts" flag (five_fret.settings.v1), default false.
         showAutoCharts: () => _showAutoCharts(),
-        // Play a library song on one 5-fret part ('guitar' | 'rhythm' | 'bass') in the main player: the
-        // part becomes the saved Part setting (as picking it in the panel does) and the 5-Fret view is
+        // Play a library song on one 5-fret part ('guitar' | 'rhythm' | 'bass'), optionally at a difficulty
+        // ('easy' | 'medium' | 'hard' | 'expert'), in the main player: they become the saved Part and
+        // Difficulty settings (as picking them in the panel does) and the 5-Fret view is
         // set for this play only (core's feedBack.ui.playSongAs). `filename` is unencoded. false on a
         // bad part or no player.
-        playOnPart(filename, part) {
+        playOnPart(filename, part, difficulty) {
             if (typeof filename !== 'string' || !filename || !Object.prototype.hasOwnProperty.call(LANE_PARTS, part)) return false;
-            _savePart(part);
+            if (difficulty !== undefined && !Object.prototype.hasOwnProperty.call(DIFFICULTY_LABELS, difficulty)) return false;
+            _saveSetting('part', part);
+            if (difficulty !== undefined) _saveSetting('difficulty', difficulty);
             const ui = window.feedBack && window.feedBack.ui;
             if (ui && typeof ui.playSongAs === 'function') return ui.playSongAs(filename, { viz: PLUGIN_ID }) !== false;
             if (typeof window.playSong !== 'function') return false;
@@ -1078,18 +1081,27 @@
         },
     };
 
-    // The Part setting, saved (five_fret.settings.v1) and applied to the normal player's instance.
-    function _savePart(part) {
+    // A setting (part, difficulty), saved (five_fret.settings.v1) and applied to the normal player's instance.
+    function _saveSetting(key, value) {
         const P = window.FiveFretProfiles;
-        if (P && typeof P.saveSettings === 'function') P.saveSettings({ part });
+        if (P && typeof P.saveSettings === 'function') P.saveSettings({ [key]: value });
         else {
             try {
                 const raw = localStorage.getItem(SETTINGS_KEY);
                 const v = raw ? JSON.parse(raw) : null;
-                localStorage.setItem(SETTINGS_KEY, JSON.stringify(Object.assign(v && typeof v === 'object' ? v : {}, { part })));
-            } catch (_) { /* storage blocked: the part applies to the live instance only */ }
+                localStorage.setItem(SETTINGS_KEY, JSON.stringify(Object.assign(v && typeof v === 'object' ? v : {}, { [key]: value })));
+            } catch (_) { /* storage blocked: it applies to the live instance only */ }
         }
-        if (_panelOwner) _panelOwner.applySetting('part', part);
+        if (_panelOwner) _panelOwner.applySetting(key, value);
+    }
+    // The saved difficulty (five_fret.settings.v1), default expert.
+    function _savedDifficulty() {
+        try {
+            const raw = localStorage.getItem(SETTINGS_KEY);
+            const v = raw ? JSON.parse(raw) : null;
+            const d = v && typeof v === 'object' ? v.difficulty : null;
+            return Object.prototype.hasOwnProperty.call(DIFFICULTY_LABELS, d) ? d : 'expert';
+        } catch (_) { return 'expert'; }
     }
 
     // ── "Play as" entries (core's libraryCardActions, placement 'play-as') ──────────
@@ -1117,7 +1129,13 @@
             placement: 'play-as', order: 40,
             applies: (song) => !!(song && song.filename),
             variants: playAsVariants,
-            run: (song, ctx) => window.feedBackFiveFret.playOnPart(song.filename, ctx && ctx.variant),
+            // The difficulty, asked after the part (charts without a level get one made from Expert).
+            choices: () => ({
+                title: 'Difficulty', default: _savedDifficulty(),
+                items: Object.keys(DIFFICULTY_LABELS).map((k) => ({ key: k, label: DIFFICULTY_LABELS[k] })),
+            }),
+            run: (song, ctx) => window.feedBackFiveFret.playOnPart(song.filename, ctx && ctx.variant,
+                ctx && ctx.choice != null ? ctx.choice : undefined),
         });
     })();
 

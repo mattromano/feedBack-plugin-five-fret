@@ -6,7 +6,7 @@ All notable changes to the 5-Fret plugin. The format follows
 ## [0.2.1] - Unreleased
 
 ### Added
-- **Play as** entries for core's library menus (`libraryCardActions`, placement `play-as`): 5-Fret Guitar / Rhythm / Bass for each part the song has (auto charts only while "Show auto charts" is on), and `window.feedBackFiveFret.playOnPart(filename, part)`.
+- **Play as** entries for core's library menus (`libraryCardActions`, placement `play-as`): 5-Fret Guitar / Rhythm / Bass for each part the song has (auto charts only while "Show auto charts" is on), then the difficulty, and `window.feedBackFiveFret.playOnPart(filename, part, difficulty?)`.
 
 ### Fixed
 - HUD moved to the bottom corners so it no longer overlaps the player's title, tuning and time; band lanes (score HUD hidden) no longer draw the header tag, and AUTO CHART sits bottom-left.

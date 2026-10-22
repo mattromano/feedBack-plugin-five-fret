@@ -1528,3 +1528,20 @@ test('playOnPart updates the live panel instance', async (t) => {
     env.win.feedBackFiveFret.playOnPart('a.sloppak', 'bass');
     assert.equal(r.getSetting('part'), 'bass');
 });
+
+test('play-as asks for the difficulty (saved one by default) and playOnPart saves it', (t) => {
+    const reg = fakeCardActions();
+    const env = setup(t, { cardActions: reg });
+    const plays = [];
+    env.win.feedBack.ui.playSongAs = (fn, o) => { plays.push([fn, o]); return true; };
+    const a = reg.actions[0];
+    assert.deepEqual(a.choices().items.map((i) => i.key), ['easy', 'medium', 'hard', 'expert']);
+    assert.equal(a.choices().default, 'expert');
+    a.run({ filename: 'x.sloppak' }, { variant: 'guitar', choice: 'medium' });
+    assert.deepEqual(P.loadSettings().part, 'guitar');
+    assert.equal(P.loadSettings().difficulty, 'medium');
+    assert.equal(a.choices().default, 'medium');
+    assert.equal(plays.length, 1);
+    assert.equal(env.win.feedBackFiveFret.playOnPart('x.sloppak', 'guitar', 'insane'), false);
+    assert.equal(plays.length, 1);
+});
