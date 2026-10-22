@@ -71,13 +71,16 @@
      * setting: 'guitar' | 'rhythm' | 'bass' takes the first part of that instrument; 'auto' (and an
      * instrument the song lacks) takes bass when the arrangement name contains "bass", else guitar,
      * else the first part. null when there are no parts.
-     * opts (optional) = { exact?, showAuto? }: exact makes an instrument setting the song lacks give
-     * null instead of falling back (a band lane pinned to Rhythm never plays Lead). showAuto is
-     * accepted for Plan 5's auto-chart gate and does not change the pick yet. No opts: as before.
+     * opts (optional) = { exact?, showAuto? }. exact: an instrument setting the song lacks gives
+     * null instead of falling back (a band lane pinned to Rhythm never plays Lead). showAuto (default
+     * false): without it, auto-generated parts (sourceKind 'auto') are left out first, so a song with
+     * only auto parts gives null. No opts: real parts only, with fallback.
      */
     function pickPart(parts, arrangementName, setting, opts) {
         if (!parts || typeof parts !== 'object') return null;
-        const ids = Object.keys(parts).filter((id) => parts[id] && typeof parts[id] === 'object');
+        const showAuto = !!(opts && opts.showAuto);
+        const ids = Object.keys(parts).filter((id) => parts[id] && typeof parts[id] === 'object'
+            && (showAuto || parts[id].sourceKind !== 'auto'));
         if (!ids.length) return null;
         const byInstrument = (inst) => ids.find((id) => parts[id].instrument === inst) || null;
         if (setting === 'guitar' || setting === 'rhythm' || setting === 'bass') {

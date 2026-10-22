@@ -119,7 +119,7 @@
 
     // gamepadMode null = by controller kind (see effectiveGamepadMode); part 'auto' = pick from the song.
     function defaultSettings() {
-        return { difficulty: 'expert', lefty: false, gamepadMode: null, offsetMs: {}, part: 'auto' };
+        return { difficulty: 'expert', lefty: false, gamepadMode: null, offsetMs: {}, part: 'auto', showAutoCharts: false };
     }
     function isPlainObject(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
     // Coerce every field to its expected type, falling back to the default.
@@ -138,6 +138,7 @@
             gamepadMode: typeof r.gamepadMode === 'boolean' ? r.gamepadMode : d.gamepadMode,
             offsetMs,
             part: typeof r.part === 'string' && r.part ? r.part : d.part,
+            showAutoCharts: typeof r.showAutoCharts === 'boolean' ? r.showAutoCharts : d.showAutoCharts,
         };
     }
     function loadSettings() { return normaliseSettings(readJSON(SETTINGS_KEY)); }

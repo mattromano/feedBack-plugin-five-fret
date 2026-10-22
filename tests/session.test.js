@@ -458,3 +458,38 @@ test('auto phrases: the last section ends after its last note; a short section i
     assert.equal(s.starPower[0].start_time, 0.25);
     assert.ok(s.starPower[0].end_time > 2.25);
 });
+
+// ── Auto charts are hidden unless opts.showAuto ──
+function withAuto() {
+    return {
+        auto: { partId: 'auto', name: 'Lead (auto)', instrument: 'guitar', sourceKind: 'auto', notes: [] },
+        real: { partId: 'real', name: 'Rhythm', instrument: 'rhythm', sourceKind: 'chart', notes: [] },
+    };
+}
+
+test('pickPart hides auto parts by default', () => {
+    const p = withAuto();
+    assert.equal(S.pickPart(p, 'Lead', 'guitar'), 'real');
+    assert.equal(S.pickPart(p, 'Lead', 'auto', { showAuto: false }), 'real');
+    assert.equal(S.pickPart(p, 'Lead', 'auto', {}), 'real');
+});
+
+test('pickPart shows auto parts when enabled', () => {
+    const p = withAuto();
+    assert.equal(S.pickPart(p, 'Lead', 'guitar', { showAuto: true }), 'auto');
+    assert.equal(S.pickPart(p, 'Lead', 'auto', { showAuto: true }), 'auto');
+});
+
+test('pickPart prefers a real part of the asked instrument over nothing', () => {
+    const p = withAuto();
+    assert.equal(S.pickPart(p, 'Lead', 'rhythm'), 'real');
+    // The asked instrument exists only as auto: falls back to the real part, never null.
+    assert.equal(S.pickPart(p, 'Lead', 'guitar'), 'real');
+});
+
+test('only-auto song gives null when hidden', () => {
+    const p = { auto: withAuto().auto };
+    assert.equal(S.pickPart(p, 'Lead', 'auto'), null);
+    assert.equal(S.pickPart(p, 'Lead', 'guitar', { showAuto: false }), null);
+    assert.equal(S.pickPart(p, 'Lead', 'guitar', { showAuto: true }), 'auto');
+});

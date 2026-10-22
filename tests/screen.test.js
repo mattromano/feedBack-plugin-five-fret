@@ -216,7 +216,7 @@ function parts() {
     return {
         lead: { partId: 'lead', name: 'Lead', instrument: 'guitar', sourceKind: 'chart', notes: [{ t: 1, f: G }, { t: 2, f: R }],
             levels: { easy: { notes: [{ t: 1, f: G }], generated: true } }, starPower: [], solos: [] },
-        low: { partId: 'low', name: 'Bass', instrument: 'bass', sourceKind: 'auto', notes: [{ t: 1, f: G }, { t: 1.5, f: G }, { t: 2, f: G }],
+        low: { partId: 'low', name: 'Bass', instrument: 'bass', sourceKind: 'chart', notes: [{ t: 1, f: G }, { t: 1.5, f: G }, { t: 2, f: G }],
             levels: {}, starPower: [], solos: [] },
     };
 }
@@ -410,6 +410,25 @@ test('a binding saved mid-session is picked up by the renderer (five_fret:bindin
     assert.equal(env2.last().message, null);
     r2.destroy();
     assert.equal(env2.bus.count('five_fret:bindings-changed'), 0);
+});
+
+test('auto parts are hidden until "Show auto charts" is on (five_fret:settings-changed)', async (t) => {
+    const env = setup(t);
+    const only = { low: Object.assign({}, parts().low, { sourceKind: 'auto' }) };
+    const r = await started(env);
+    r.draw(bundleAt(0, only));
+    assert.equal(env.last().message, 'No 5-fret chart for this song');
+    P.saveSettings({ showAutoCharts: true });
+    env.bus.emit('five_fret:settings-changed', { showAutoCharts: true });
+    r.draw(bundleAt(FRAME, only));
+    assert.equal(env.last().notes, 3);
+    assert.notEqual(env.last().message, 'No 5-fret chart for this song');
+    P.saveSettings({ showAutoCharts: false });
+    env.bus.emit('five_fret:settings-changed', {});
+    r.draw(bundleAt(2 * FRAME, only));
+    assert.equal(env.last().message, 'No 5-fret chart for this song');
+    r.destroy();
+    assert.equal(env.bus.count('five_fret:settings-changed'), 0);
 });
 
 // ── Claim rules ──────────────────────────────────────────────────────────────────
@@ -1447,7 +1466,10 @@ test('an unpinned renderer\'s Start still toggles play', async (t) => {
 });
 
 test('an auto part draws and plays star power phrases from the song\'s sections', async (t) => {
-    const env = setup(t);
+    // Auto parts are hidden unless showAutoCharts is on (Plan 5's gate).
+    const storage = memoryStorage();
+    storage.setItem('five_fret.settings.v1', JSON.stringify({ showAutoCharts: true }));
+    const env = setup(t, { storage });
     const r = await started(env);
     const notes = [];
     for (let x = 0; x < 16; x += 0.5) notes.push({ t: x, f: G });
