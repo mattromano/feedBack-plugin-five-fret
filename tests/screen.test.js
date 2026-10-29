@@ -1575,3 +1575,237 @@ test('with RockHeroSmith installed, play-as plays solo on its stage (and still s
     assert.equal(P.loadSettings().part, 'bass');
     assert.equal(P.loadSettings().difficulty, 'hard');
 });
+
+// ── Quick settings (window.feedBackFiveFret.mountQuickSettings) ─────────────────────
+
+async function mountQuick(env, opts) {
+    const host = fakeElement('div');
+    const qs = env.win.feedBackFiveFret.mountQuickSettings(host, opts);
+    await tick();
+    return { host, qs, get: (ff) => find(host, ff) };
+}
+const optionIds = (select) => select.children.filter((o) => !o.disabled).map((o) => o.value);
+function change(control, value) {
+    if (typeof value === 'boolean') control.checked = value; else control.value = value;
+    control.fire('change');
+}
+
+test('quick settings without a canvas drive the normal player live and save like its panel', async (t) => {
+    const env = setup(t);
+    const ff = parts();
+    const r = await started(env);
+    r.draw(bundleAt(0, ff));
+    const q = await mountQuick(env);
+    assert.equal(q.host.children.length, 1);
+    assert.equal(q.get('qs-difficulty').value, 'expert');
+    assert.deepEqual(optionIds(q.get('qs-part')), ['guitar', 'bass']);   // only the parts the song has
+    assert.equal(q.get('qs-part').value, 'guitar');
+    assert.equal(q.get('qs-lefty').checked, false);
+    assert.equal(q.get('qs-offset').value, '0');
+
+    change(q.get('qs-difficulty'), 'easy');
+    r.draw(bundleAt(FRAME, ff));
+    assert.equal(env.last().header, 'Lead · GAMEPAD · Easy');
+    assert.equal(P.loadSettings().difficulty, 'easy');
+    change(q.get('qs-part'), 'bass');
+    r.draw(bundleAt(2 * FRAME, ff));
+    assert.equal(env.last().header, 'Bass · GAMEPAD · Expert');   // this bass chart has no Easy level
+    assert.equal(P.loadSettings().part, 'bass');
+    change(q.get('qs-lefty'), true);
+    r.draw(bundleAt(3 * FRAME, ff));
+    assert.equal(env.last().lefty, true);
+    assert.equal(P.loadSettings().lefty, true);
+    // The normal player's panel shows the same values (one settings path).
+    const panelSelects = env.slot.children[0].children.filter((c) => c.children.length === 2).map((row) => row.children[1]);
+    assert.equal(panelSelects[0].value, 'bass');
+    assert.equal(panelSelects[1].value, 'easy');
+    assert.equal(panelSelects[2].checked, true);
+});
+
+test('quick settings offset: saved per controller, clamped, and judged with live', async (t) => {
+    const env = setup(t);
+    const ff = parts();
+    const r = await started(env);
+    r.draw(bundleAt(0, ff));
+    const q = await mountQuick(env);
+    const seen = [];
+    env.bus.on('five_fret:offset-changed', (e) => seen.push(e.detail));
+    change(q.get('qs-offset'), '23');
+    assert.equal(q.get('qs-offset').value, '25');
+    assert.equal(P.loadSettings().offsetMs['Xbox#1'], 25);
+    assert.deepEqual(seen, [{ controllerKey: 'Xbox#1', offsetMs: 25 }]);
+    change(q.get('qs-offset'), 'abc');
+    assert.equal(q.get('qs-offset').value, '25');
+    change(q.get('qs-offset'), '999');
+    assert.equal(q.get('qs-offset').value, '200');
+    // A strum 200 ms after the note is on time with the new offset.
+    for (let x = 0.8; x < 1.2; x += FRAME) r.draw(bundleAt(x, ff));
+    r.draw(bundleAt(1.2, ff));
+    env.gi.button(6, true);
+    env.gi.button(13, true);
+    r.draw(bundleAt(1.2 + FRAME, ff));
+    assert.equal(env.last().hits, 1);
+});
+
+test('quick settings keep the controller\'s offset while paused; no controller hides it', async (t) => {
+    const env = setup(t);
+    const ff = parts();
+    const r = await started(env);
+    const q = await mountQuick(env);
+    assert.equal(q.get('qs-offset').parentNode.hidden, true);   // nothing claimed yet
+    assert.equal(q.get('qs-part').parentNode.hidden, true);     // no song yet
+    r.draw(bundleAt(0, ff));                                    // claims and picks a part: shown
+    assert.equal(q.get('qs-offset').parentNode.hidden, false);
+    assert.equal(q.get('qs-part').parentNode.hidden, false);
+    r.draw(bundleAt(FRAME, ff, { isPlaying: false }));          // paused: the claim is let go
+    assert.equal(env.gi.owner(0), null);
+    assert.equal(q.get('qs-offset').parentNode.hidden, false);
+    change(q.get('qs-offset'), '10');
+    assert.equal(P.loadSettings().offsetMs['Xbox#1'], 10);
+    // An explicit controllerKey wins.
+    const q2 = await mountQuick(env, { controllerKey: 'Guitar#1' });
+    change(q2.get('qs-offset'), '-15');
+    assert.equal(P.loadSettings().offsetMs['Guitar#1'], -15);
+    assert.equal(P.loadSettings().offsetMs['Xbox#1'], 10);
+});
+
+test('quick settings on a band lane change the pin, never the saved settings, and announce it', async (t) => {
+    const env = setup(t);
+    P.saveSettings({ difficulty: 'hard' });
+    const saved = env.storage.getItem(P.SETTINGS_KEY);
+    const api = env.win.feedBackFiveFret;
+    const cv = fakeElement('canvas');
+    api.setLane(cv, lane({ difficulty: 'easy', lefty: false }));
+    const r = await startedOn(env, cv);
+    const ff = parts();
+    r.draw(bundleAt(0, ff));
+    const q = await mountQuick(env, { canvas: cv });
+    const quick = [];
+    env.bus.on('five_fret:quick-setting', (e) => quick.push(e.detail));
+    assert.equal(q.get('qs-difficulty').value, 'easy');
+    assert.equal(q.get('qs-lefty').checked, false);
+    change(q.get('qs-difficulty'), 'expert');
+    change(q.get('qs-part'), 'bass');
+    change(q.get('qs-lefty'), true);
+    r.draw(bundleAt(FRAME, ff));
+    assert.equal(env.last().header, 'Bass · GAMEPAD · Expert');
+    assert.equal(env.last().lefty, true);
+    assert.equal(env.gi.owner(0), 'five_fret');   // same controller, still held
+    assert.equal(env.storage.getItem(P.SETTINGS_KEY), saved);
+    assert.deepEqual(quick.map((d) => [d.key, d.value, d.lane, d.canvas === cv, d.controllerKey]), [
+        ['difficulty', 'expert', true, true, 'Xbox#1'], ['part', 'bass', true, true, 'Xbox#1'], ['lefty', true, true, true, 'Xbox#1'],
+    ]);
+    // The lane's offset is its controller's.
+    change(q.get('qs-offset'), '30');
+    assert.equal(P.loadSettings().offsetMs['Xbox#1'], 30);
+});
+
+test('quick settings follow changes made elsewhere, and destroy removes them', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    const cv = fakeElement('canvas');
+    api.setLane(cv, lane());
+    const r = await startedOn(env, cv);
+    r.draw(bundleAt(0, parts()));
+    const q = await mountQuick(env, { canvas: cv });
+    api.setDifficulty('medium', cv);
+    assert.equal(q.get('qs-difficulty').value, 'medium');
+    api.setLane(cv, lane({ difficulty: 'hard', lefty: false }));
+    assert.equal(q.get('qs-difficulty').value, 'hard');
+    assert.equal(q.get('qs-lefty').checked, false);
+    // The normal player's panel and the quick settings stay in step.
+    const r2 = await started(env);
+    r2.draw(bundleAt(0, parts()));
+    const solo = await mountQuick(env);
+    r2.applySetting('difficulty', 'easy');
+    assert.equal(solo.get('qs-difficulty').value, 'easy');
+    q.qs.destroy();
+    solo.qs.destroy();
+    assert.equal(q.host.children.length, 0);
+    assert.equal(solo.host.children.length, 0);
+    assert.doesNotThrow(() => api.setDifficulty('expert', cv));
+    assert.doesNotThrow(() => q.qs.destroy());
+});
+
+test('mountQuickSettings: no element is a no-op; destroy before load builds nothing', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    assert.equal(typeof api.mountQuickSettings(null).destroy, 'function');
+    const host = fakeElement('div');
+    api.mountQuickSettings(host).destroy();
+    await tick();
+    assert.equal(host.children.length, 0);
+});
+
+test('the 5-fret score HUD shows only when RockHeroSmith is absent or does not adopt solo plays', async (t) => {
+    const env = setup(t);
+    const ff = parts();
+    const main = fakeElement('canvas');
+    main.id = 'highway';   // core's main view: the only one RockHeroSmith adopts
+    const r = await startedOn(env, main);
+    r.draw(bundleAt(0, ff));
+    assert.equal(env.last().scoreHidden, false);
+    env.win.rockHeroSmith = { version: 1 };   // an older RockHeroSmith: no adoptsSolo
+    r.draw(bundleAt(FRAME, ff));
+    assert.equal(env.last().scoreHidden, false);
+    env.win.rockHeroSmith.adoptsSolo = () => false;
+    r.draw(bundleAt(2 * FRAME, ff));
+    assert.equal(env.last().scoreHidden, false);
+    env.win.rockHeroSmith.adoptsSolo = () => true;
+    r.draw(bundleAt(3 * FRAME, ff));
+    assert.equal(env.last().scoreHidden, true);
+    env.win.rockHeroSmith.adoptsSolo = () => { throw new Error('boom'); };
+    r.draw(bundleAt(4 * FRAME, ff));
+    assert.equal(env.last().scoreHidden, false);
+    // Split view on: RockHeroSmith adopts no panel, so even #highway keeps its HUD.
+    env.win.rockHeroSmith.adoptsSolo = () => true;
+    env.win.slopsmithSplitscreen = { isActive: () => true };
+    r.draw(bundleAt(5 * FRAME, ff));
+    assert.equal(env.last().scoreHidden, false);
+    const panel = fakeElement('canvas');
+    panel.id = 'ss-highway-1';
+    const rp = await startedOn(env, panel);
+    rp.draw(bundleAt(0, ff));
+    assert.equal(env.last().scoreHidden, false);
+    delete env.win.slopsmithSplitscreen;
+    r.draw(bundleAt(6 * FRAME, ff));
+    assert.equal(env.last().scoreHidden, true);
+    // Another canvas (not #highway) is never adopted, split view or not.
+    rp.draw(bundleAt(FRAME, ff));
+    assert.equal(env.last().scoreHidden, false);
+    // A band lane follows setScoreHudHidden only (RockHeroSmith hides it itself).
+    const cv = fakeElement('canvas');
+    env.win.feedBackFiveFret.setLane(cv, lane({ controllerKey: 'Pad#1' }));
+    const rl = await startedOn(env, cv);
+    rl.draw(bundleAt(0, ff));
+    assert.equal(env.last().scoreHidden, false);
+});
+
+test('getDifficulty: a lane\'s pinned difficulty, else the instance\'s, else the saved setting', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    assert.equal(api.getDifficulty(), 'expert');            // nothing saved
+    P.saveSettings({ difficulty: 'hard' });
+    assert.equal(api.getDifficulty(), 'hard');
+    assert.equal(api.getDifficulty(null), 'hard');
+    assert.equal(api.getDifficulty(fakeElement('canvas')), 'hard');   // a canvas nothing draws on
+    const cv = fakeElement('canvas');
+    api.setLane(cv, lane({ difficulty: 'easy' }));
+    assert.equal(api.getDifficulty(cv), 'easy');            // pinned, before an instance inits
+    const r = await startedOn(env, cv);
+    api.setDifficulty('medium', cv);
+    assert.equal(api.getDifficulty(cv), 'medium');
+    r.draw(bundleAt(0, parts()));
+    assert.equal(api.getInstanceState(cv).difficulty, 'medium');
+    // An unpinned instance (a split panel) answers with its own setting.
+    const cv2 = fakeElement('canvas');
+    const r2 = await startedOn(env, cv2);
+    r2.applySetting('difficulty', 'easy');
+    assert.equal(api.getDifficulty(cv2), r2.getSetting('difficulty'));
+    r2.draw(bundleAt(0, parts()));
+    assert.equal(api.getInstanceState(cv2).difficulty, r2.getSetting('difficulty'));
+    // The saved setting follows the player's pick (playOnPart, the panel).
+    env.win.feedBack.ui.playSongAs = () => true;
+    api.playOnPart('a.sloppak', 'guitar', 'medium');
+    assert.equal(api.getDifficulty(), 'medium');
+});

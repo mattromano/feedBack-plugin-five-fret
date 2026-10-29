@@ -191,16 +191,35 @@ renderer inits on the canvas (or across a re-init) still applies.
 const ff = window.feedBackFiveFret;
 ff.setLane(canvas, { controllerKey: 'Xbox Wireless Controller#2', part: 'bass', difficulty: 'expert', lefty: false });
 ff.setDifficulty('hard', canvas);
+ff.getDifficulty(canvas);                // the lane's pinned difficulty; no canvas: the saved setting
 ff.setScoreHudHidden(canvas, true);      // ff.isScoreHudHidden(canvas)
 ff.getInstanceState(canvas);             // null, or getState() + { starThresholds, partId, instrument,
-                                         //   sourceKind, controllerKey, connected }
+                                         //   sourceKind, difficulty, controllerKey, connected }
 ff.clearLane(canvas);
 await ff.listControllers();              // [{ index, controllerKey, id, mapping, name, kind, connected, claimedBy }]
 await ff.createMapper(controllerKey);    // { map(ev) -> [{ action, value }] } | null
 ff.showAutoCharts();                     // the saved "show auto charts" flag, default false
 ff.openControls({ returnTo: 'plugin-build_a_band' });
 ff.playOnPart('song.sloppak', 'bass', 'hard');   // main player: that part (and difficulty), 5-Fret view for this play only
+const qs = ff.mountQuickSettings(el, { canvas, controllerKey });   // in-song settings; qs.destroy()
 ```
+
+- **`mountQuickSettings(el, { canvas?, controllerKey? })`** puts in-song settings for one lane in `el`
+  and returns `{ destroy() }`: difficulty, part (only the instruments the song has; hidden when there
+  is nothing to switch to), lefty and the controller's input offset (step 5, ±200 ms; hidden until a
+  controller has played). Changes apply live. With a band lane's `canvas` they change its pin
+  (`setLane` / `setDifficulty`) and are never saved; otherwise (no `canvas`: the normal player) they go
+  through the same path as the 5-Fret panel and are saved as the defaults. `controllerKey` picks whose
+  offset is shown (default: the lane's controller). Every change emits `five_fret:quick-setting`
+  `{ canvas, controllerKey, key, value, lane }` so a band host can keep its own per-player prefs in
+  step. The controls fill in once the plugin's scripts load; they follow changes made elsewhere (the
+  panel, `setLane`, `setDifficulty`, the controls screen). Which controls show is
+  `FiveFretControls.quickSettingsModel` (`assets/controls.js`, pure).
+- **Score HUD with RockHeroSmith.** The renderer on core's main view (canvas `#highway`, split view
+  off, not a band lane) hides its score HUD (as `setScoreHudHidden`) while
+  `window.rockHeroSmith.adoptsSolo()` returns true: RockHeroSmith then scores the solo play with its
+  own HUD and results. Split-screen panels and other canvases are never adopted and keep theirs. Without RockHeroSmith, or one without
+  `adoptsSolo` or with it off, the 5-fret HUD shows as before.
 
 - **`playOnPart(filename, part, difficulty?)`** plays a library song (unencoded filename) in the main
   player on one part (`guitar` | `rhythm` | `bass`), optionally at a difficulty (`easy` | `medium` |
@@ -221,7 +240,12 @@ ff.playOnPart('song.sloppak', 'bass', 'hard');   // main player: that part (and 
   screen is open. `clearLane` returns the renderer to its own settings and the normal claim rules.
 - **`setScoreHudHidden`** hides the lane's score, multiplier, streak, star power bar and stars; the
   header tag, AUTO CHART and status messages stay.
-- **`getInstanceState`**'s `starThresholds` are the full chart's (the same after a seek).
+- **`getDifficulty(canvas?)`** returns `easy` | `medium` | `hard` | `expert`: a pinned lane's
+  difficulty; for an unpinned canvas, the setting of the renderer drawing on it; otherwise (no canvas, or
+  none drawing) the player's saved Difficulty (default `expert`). RockHeroSmith reads it when it adopts
+  a plain 5-fret play, so the player's own pick wins.
+- **`getInstanceState`**'s `starThresholds` are the full chart's (the same after a seek). Its
+  `difficulty` is the picked one (as `getDifficulty`), even when the chart lacks that level.
 - **`listControllers`** and **`createMapper`** return Promises and load `profiles.js` on demand.
   `kind` is the resolved binding's (`gamepad` | `guitar`), or null when the controller needs setup.
   `name` is the controller id up to its first ` (`, at most 24 characters, plus ` 2` for a second
