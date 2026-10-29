@@ -191,9 +191,10 @@ renderer inits on the canvas (or across a re-init) still applies.
 const ff = window.feedBackFiveFret;
 ff.setLane(canvas, { controllerKey: 'Xbox Wireless Controller#2', part: 'bass', difficulty: 'expert', lefty: false });
 ff.setDifficulty('hard', canvas);
+ff.getDifficulty(canvas);                // the lane's pinned difficulty; no canvas: the saved setting
 ff.setScoreHudHidden(canvas, true);      // ff.isScoreHudHidden(canvas)
 ff.getInstanceState(canvas);             // null, or getState() + { starThresholds, partId, instrument,
-                                         //   sourceKind, controllerKey, connected }
+                                         //   sourceKind, difficulty, controllerKey, connected }
 ff.clearLane(canvas);
 await ff.listControllers();              // [{ index, controllerKey, id, mapping, name, kind, connected, claimedBy }]
 await ff.createMapper(controllerKey);    // { map(ev) -> [{ action, value }] } | null
@@ -239,7 +240,12 @@ const qs = ff.mountQuickSettings(el, { canvas, controllerKey });   // in-song se
   screen is open. `clearLane` returns the renderer to its own settings and the normal claim rules.
 - **`setScoreHudHidden`** hides the lane's score, multiplier, streak, star power bar and stars; the
   header tag, AUTO CHART and status messages stay.
-- **`getInstanceState`**'s `starThresholds` are the full chart's (the same after a seek).
+- **`getDifficulty(canvas?)`** returns `easy` | `medium` | `hard` | `expert`: a pinned lane's
+  difficulty; for an unpinned canvas, the setting of the renderer drawing on it; otherwise (no canvas, or
+  none drawing) the player's saved Difficulty (default `expert`). RockHeroSmith reads it when it adopts
+  a plain 5-fret play, so the player's own pick wins.
+- **`getInstanceState`**'s `starThresholds` are the full chart's (the same after a seek). Its
+  `difficulty` is the picked one (as `getDifficulty`), even when the chart lacks that level.
 - **`listControllers`** and **`createMapper`** return Promises and load `profiles.js` on demand.
   `kind` is the resolved binding's (`gamepad` | `guitar`), or null when the controller needs setup.
   `name` is the controller id up to its first ` (`, at most 24 characters, plus ` 2` for a second

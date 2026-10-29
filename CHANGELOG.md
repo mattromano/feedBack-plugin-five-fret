@@ -10,6 +10,8 @@ All notable changes to the 5-Fret plugin. The format follows
   part (only the parts the song has), lefty and input offset for one lane, applied live. A band lane's
   changes go to its pin (`setLane` / `setDifficulty`, never saved); the normal player's go through the
   5-Fret panel's path and are saved. Each change emits `five_fret:quick-setting`.
+- `feedBackFiveFret.getDifficulty(canvas?)`: a lane's pinned difficulty, else the player's saved one;
+  `getInstanceState` carries `difficulty` too.
 - `assets/controls.js` exports `quickSettingsModel` (which quick settings show, pure), `parseOffset`
   and `offsetInput`, shared by the controls screen and the quick settings.
 

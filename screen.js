@@ -885,6 +885,7 @@
                     partId: built.partId,
                     instrument: built.part.instrument,
                     sourceKind: built.part.sourceKind,
+                    difficulty: cur().difficulty,   // the picked one (the chart may lack that level)
                     controllerKey: handle ? handle.controllerKey : (pin ? pin.controllerKey : null),
                     connected: !!handle && connected,
                 });
@@ -1079,6 +1080,18 @@
             _quickSyncAll();
             return true;
         },
+        // The difficulty in play: a lane's pinned one, else the instance's on that canvas (a split
+        // panel's own), else the player's saved setting (five_fret.settings.v1, default expert).
+        getDifficulty(canvas) {
+            if (_canvasArg(canvas)) {
+                const lane = _lanes.get(canvas);
+                if (lane) return lane.difficulty;
+                const inst = _byCanvas.get(canvas);
+                const d = inst ? inst.getSetting('difficulty') : null;
+                if (Object.prototype.hasOwnProperty.call(DIFFICULTY_LABELS, d)) return d;
+            }
+            return _savedDifficulty();
+        },
         // Hide (true) or show (false) that lane's score, multiplier, streak, SP bar and stars.
         setScoreHudHidden(canvas, hidden) {
             if (!_canvasArg(canvas) || typeof hidden !== 'boolean') return false;
@@ -1088,7 +1101,7 @@
         },
         isScoreHudHidden(canvas) { return _canvasArg(canvas) && _scoreHidden.get(canvas) === true; },
         // Engine getState() plus { starThresholds (full chart), partId, instrument, sourceKind,
-        // controllerKey, connected }, or null (no instance on the canvas, or no part playing).
+        // difficulty, controllerKey, connected }, or null (no instance on the canvas, or no part playing).
         getInstanceState(canvas) {
             const inst = _canvasArg(canvas) ? _byCanvas.get(canvas) : null;
             try { return inst ? inst._bandState() : null; } catch (_) { return null; }

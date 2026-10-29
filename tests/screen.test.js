@@ -1780,3 +1780,32 @@ test('the 5-fret score HUD shows only when RockHeroSmith is absent or does not a
     rl.draw(bundleAt(0, ff));
     assert.equal(env.last().scoreHidden, false);
 });
+
+test('getDifficulty: a lane\'s pinned difficulty, else the instance\'s, else the saved setting', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    assert.equal(api.getDifficulty(), 'expert');            // nothing saved
+    P.saveSettings({ difficulty: 'hard' });
+    assert.equal(api.getDifficulty(), 'hard');
+    assert.equal(api.getDifficulty(null), 'hard');
+    assert.equal(api.getDifficulty(fakeElement('canvas')), 'hard');   // a canvas nothing draws on
+    const cv = fakeElement('canvas');
+    api.setLane(cv, lane({ difficulty: 'easy' }));
+    assert.equal(api.getDifficulty(cv), 'easy');            // pinned, before an instance inits
+    const r = await startedOn(env, cv);
+    api.setDifficulty('medium', cv);
+    assert.equal(api.getDifficulty(cv), 'medium');
+    r.draw(bundleAt(0, parts()));
+    assert.equal(api.getInstanceState(cv).difficulty, 'medium');
+    // An unpinned instance (a split panel) answers with its own setting.
+    const cv2 = fakeElement('canvas');
+    const r2 = await startedOn(env, cv2);
+    r2.applySetting('difficulty', 'easy');
+    assert.equal(api.getDifficulty(cv2), r2.getSetting('difficulty'));
+    r2.draw(bundleAt(0, parts()));
+    assert.equal(api.getInstanceState(cv2).difficulty, r2.getSetting('difficulty'));
+    // The saved setting follows the player's pick (playOnPart, the panel).
+    env.win.feedBack.ui.playSongAs = () => true;
+    api.playOnPart('a.sloppak', 'guitar', 'medium');
+    assert.equal(api.getDifficulty(), 'medium');
+});
