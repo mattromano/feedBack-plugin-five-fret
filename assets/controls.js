@@ -13,6 +13,11 @@
  * P, calling onBindingSaved / onOffsetSaved after each. When controllers come and go (gamepad-input
  * change events) it reconciles the cards: a controller still connected keeps its card, claim, setup
  * and calibration. Calibrate is the only thing here that makes sound, and only when it is clicked.
+ *
+ * Shared with screen.js's in-song quick settings (feedBackFiveFret.mountQuickSettings):
+ *   quickSettingsModel({ parts, playing, current, controllerKey, offsetMs, showAuto }) -> which controls
+ *     show and with what values (pure; see below); parseOffset(raw) -> ms (step 5, ±200) or null;
+ *   offsetInput() -> the input offset <input> both screens use.
  */
 (function (root, factory) {
     'use strict';
@@ -62,6 +67,76 @@
     function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
     function clampOffset(v) {
         return Math.min(OFFSET_MAX, Math.max(OFFSET_MIN, Math.round(v / OFFSET_STEP) * OFFSET_STEP));
+    }
+    // An offset field's value as ms (stepped and clamped), or null when it holds no number.
+    function parseOffset(raw) {
+        if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) return null;
+        const v = Number(raw);
+        return Number.isFinite(v) ? clampOffset(v) : null;
+    }
+    // The input offset field (ms), as the controls screen and the quick settings show it.
+    function offsetInput() {
+        const input = el('input', 'bg-fb-bg border border-fb-border rounded text-fb-text text-sm px-2 py-1 w-24');
+        input.type = 'number';
+        input.min = String(OFFSET_MIN);
+        input.max = String(OFFSET_MAX);
+        input.step = String(OFFSET_STEP);
+        return input;
+    }
+
+    // ── Quick settings model (pure) ──
+
+    const DIFFICULTIES = [['easy', 'Easy'], ['medium', 'Medium'], ['hard', 'Hard'], ['expert', 'Expert']];
+    const PARTS = [['guitar', 'Guitar'], ['rhythm', 'Rhythm'], ['bass', 'Bass']];
+    /**
+     * Which in-song controls show, and their values.
+     *   parts: the song's bundle.fiveFretParts (or null before it loads); playing: the instrument of the
+     *   part being played, or null; current: { part, difficulty, lefty } (the instance's settings, or a
+     *   band lane's pin); controllerKey: whose input offset to show (null hides it); offsetMs: the saved
+     *   offsets by controller key; showAuto: "Show auto charts" (auto parts are offered only then).
+     * -> { difficulty: { value, options }, part: { value, options } | null, lefty: { value },
+     *      offset: { controllerKey, value, min, max, step } | null }
+     * part options are the instruments the song has (guitar, rhythm, bass order; auto: true when only
+     * an auto chart has it). part is null when there is nothing to switch to: no parts, or only the
+     * one playing. value is null when none of the options is selected (a lane pinned to a part the
+     * song lacks).
+     */
+    function quickSettingsModel(o) {
+        o = o || {};
+        const cur = o.current && typeof o.current === 'object' ? o.current : {};
+        const has = (list, id) => typeof id === 'string' && list.some((x) => (Array.isArray(x) ? x[0] : x.id) === id);
+        const difficulty = {
+            value: has(DIFFICULTIES, cur.difficulty) ? cur.difficulty : 'expert',
+            options: DIFFICULTIES.map(([id, label]) => ({ id, label })),
+        };
+        const kinds = Object.create(null);   // instrument -> 'chart' | 'auto'
+        const parts = o.parts && typeof o.parts === 'object' ? o.parts : {};
+        for (const id of Object.keys(parts)) {
+            const p = parts[id];
+            if (!p || typeof p !== 'object' || !has(PARTS, p.instrument)) continue;
+            const auto = p.sourceKind === 'auto';
+            if (auto && !o.showAuto) continue;
+            if (!auto) kinds[p.instrument] = 'chart';
+            else if (!kinds[p.instrument]) kinds[p.instrument] = 'auto';
+        }
+        const options = PARTS.filter(([id]) => kinds[id]).map(([id, label]) => ({ id, label, auto: kinds[id] === 'auto' }));
+        let part = null;
+        if (options.length) {
+            let value = null;
+            if (o.playing && has(options, o.playing)) value = o.playing;
+            else if (has(options, cur.part)) value = cur.part;
+            else if (!o.playing && !o.lane) value = options[0].id;
+            if (options.length > 1 || value === null) part = { value, options };
+        }
+        const key = typeof o.controllerKey === 'string' && o.controllerKey ? o.controllerKey : null;
+        const off = key && o.offsetMs && typeof o.offsetMs === 'object' ? o.offsetMs[key] : 0;
+        return {
+            difficulty,
+            part,
+            lefty: { value: cur.lefty === true },
+            offset: key ? { controllerKey: key, value: Number.isFinite(off) ? off : 0,
+                min: OFFSET_MIN, max: OFFSET_MAX, step: OFFSET_STEP } : null,
+        };
     }
     // The browser's own state of one controller (axis rests, button count), or null.
     function browserPad(index) {
@@ -201,13 +276,13 @@
             onOffsetSaved(card.key, ms);
         }
         function onOffsetChange(card) {
-            const v = Number(card.offset.value);
-            if (card.offset.value === '' || !Number.isFinite(v)) {
+            const ms = parseOffset(card.offset.value);
+            if (ms === null) {
                 const stored = P.loadSettings().offsetMs[card.key];
                 card.offset.value = String(Number.isFinite(stored) ? stored : 0);
                 return;
             }
-            saveOffset(card, clampOffset(v));
+            saveOffset(card, ms);
         }
 
         // ── Calibrate (plays clicks: only from its button) ──
@@ -376,11 +451,7 @@
 
             // Input offset and Calibrate.
             const offsetRow = el('div', 'flex flex-wrap items-center gap-2 mt-2');
-            card.offset = el('input', 'bg-fb-bg border border-fb-border rounded text-fb-text text-sm px-2 py-1 w-24');
-            card.offset.type = 'number';
-            card.offset.min = String(OFFSET_MIN);
-            card.offset.max = String(OFFSET_MAX);
-            card.offset.step = String(OFFSET_STEP);
+            card.offset = offsetInput();
             card.offset.dataset.ff = 'offset';
             const off = settings.offsetMs[card.key];
             card.offset.value = String(Number.isFinite(off) ? off : 0);
@@ -460,5 +531,5 @@
         };
     }
 
-    return { create, OFFSET_MIN, OFFSET_MAX, OFFSET_STEP };
+    return { create, quickSettingsModel, parseOffset, offsetInput, OFFSET_MIN, OFFSET_MAX, OFFSET_STEP };
 });

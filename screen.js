@@ -33,6 +33,13 @@
  * its own settings, seeded from five_fret.settings.v1; only the normal player's panel instance saves
  * back to it (profiles.saveSettings), so splitscreen panels never change each other or the defaults.
  *
+ * In-song quick settings (feedBackFiveFret.mountQuickSettings): difficulty, part, lefty and input offset
+ * for one lane, applied live through the same paths as the panel (applySetting / _saveSetting) or, for a
+ * band lane, setLane / setDifficulty. Which controls show is assets/controls.js quickSettingsModel.
+ *
+ * Score HUD fallback: an unpinned instance shows its score HUD only while RockHeroSmith is absent or
+ * does not adopt solo plays (rockHeroSmith.adoptsSolo()); when it does, RockHeroSmith's HUD scores them.
+ *
  * It also opens and closes the plugin's controls screen (screen.html, #plugin-five_fret; the screen
  * itself is assets/controls.js). See "Controls screen hook" below.
  */
@@ -40,7 +47,7 @@
     'use strict';
 
     const PLUGIN_ID = 'five_fret';
-    const ASSET_VERSION = '0.3.0';   // cache-buster for the lazily loaded files: bump with releases
+    const ASSET_VERSION = '0.3.1';   // cache-buster for the lazily loaded files: bump with releases
     const THREE_URL = '/static/vendor/three/three.module.min.js';
     const PLUGIN_ASSETS = '/api/plugins/' + PLUGIN_ID + '/assets/';
     // Load order matters: session.js needs engine.js, highway3d.js needs layout.js.
@@ -58,6 +65,9 @@
     const EV_BINDINGS = 'five_fret:bindings-changed';   // { controllerKey }: a binding was saved
     const EV_SETTINGS = 'five_fret:settings-changed';   // settings.html saved a setting (showAutoCharts)
     const EV_OFFSET = 'five_fret:offset-changed';       // { controllerKey, offsetMs }: an input offset was saved
+    // A quick settings change ({ canvas, controllerKey, key, value, lane }): lane true when it changed a
+    // band lane's pin (which is never saved here), so whoever pinned it can keep its own prefs in step.
+    const EV_QUICK = 'five_fret:quick-setting';
     // Judgments and star power for Build-a-Band (engine event type -> bus name), from every instance's
     // draw. detail: the engine payload plus { canvas, controllerKey, partId, instrument, score, combo,
     // multiplier, spActive, resets } (see emitBandEvents).
@@ -173,6 +183,12 @@
         try { return fb.ui.playerControlSlot() || null; } catch (_) { return null; }
     }
 
+    // RockHeroSmith scores solo plays itself (its HUD, results): then the 5-fret score HUD stays hidden.
+    function _rhsAdoptsSolo() {
+        const rhs = window.rockHeroSmith;
+        try { return !!(rhs && typeof rhs.adoptsSolo === 'function' && rhs.adoptsSolo() === true); } catch (_) { return false; }
+    }
+
     // Settings values a control may set (anything else is ignored).
     function _validSetting(key, value) {
         if (key === 'part') return Object.prototype.hasOwnProperty.call(PART_LABELS, value);
@@ -190,6 +206,43 @@
             const v = raw ? JSON.parse(raw) : null;
             return !!(v && typeof v === 'object' && v.showAutoCharts === true);
         } catch (_) { return false; }
+    }
+
+    // ── Settings rows (the panel and the quick settings) ───────────────────────
+
+    // A labelled row in `container`; returns the control (its row is control.parentNode).
+    function _row(container, label, control) {
+        const r = document.createElement('label');
+        r.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
+        const span = document.createElement('span');
+        span.textContent = label;
+        span.className = 'text-fb-textDim';
+        r.appendChild(span);
+        r.appendChild(control);
+        container.appendChild(r);
+        return control;
+    }
+    // A <select>'s options from [{ id, label, disabled? }].
+    function _fillSelect(s, options) {
+        s.replaceChildren();
+        for (const it of options) {
+            const o = document.createElement('option');
+            o.value = it.id;
+            o.textContent = it.label;
+            if (it.disabled) o.disabled = true;
+            s.appendChild(o);
+        }
+    }
+    function _select(labels) {
+        const s = document.createElement('select');
+        s.className = 'bg-fb-bg border border-fb-border rounded text-fb-text';
+        _fillSelect(s, Object.keys(labels).map((id) => ({ id, label: labels[id] })));
+        return s;
+    }
+    function _check() {
+        const c = document.createElement('input');
+        c.type = 'checkbox';
+        return c;
     }
 
     // ── Normal-player panel (one, owned by the main player's instance) ─────────
@@ -215,37 +268,10 @@
         title.style.cssText = 'font-weight:600;';
         el.appendChild(title);
 
-        const row = (label, control) => {
-            const r = document.createElement('label');
-            r.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
-            const span = document.createElement('span');
-            span.textContent = label;
-            span.className = 'text-fb-textDim';
-            r.appendChild(span);
-            r.appendChild(control);
-            el.appendChild(r);
-            return control;
-        };
-        const select = (labels) => {
-            const s = document.createElement('select');
-            s.className = 'bg-fb-bg border border-fb-border rounded text-fb-text';
-            for (const id of Object.keys(labels)) {
-                const o = document.createElement('option');
-                o.value = id;
-                o.textContent = labels[id];
-                s.appendChild(o);
-            }
-            return s;
-        };
-        const check = () => {
-            const c = document.createElement('input');
-            c.type = 'checkbox';
-            return c;
-        };
-        const part = row('Part', select(PART_LABELS));
-        const difficulty = row('Difficulty', select(DIFFICULTY_LABELS));
-        const lefty = row('Lefty', check());
-        const gamepadMode = row('Gamepad mode', check());
+        const part = _row(el, 'Part', _select(PART_LABELS));
+        const difficulty = _row(el, 'Difficulty', _select(DIFFICULTY_LABELS));
+        const lefty = _row(el, 'Lefty', _check());
+        const gamepadMode = _row(el, 'Gamepad mode', _check());
         part.addEventListener('change', () => _panelOwner && _panelOwner.applySetting('part', part.value));
         difficulty.addEventListener('change', () => _panelOwner && _panelOwner.applySetting('difficulty', difficulty.value));
         lefty.addEventListener('change', () => _panelOwner && _panelOwner.applySetting('lefty', lefty.checked));
@@ -273,6 +299,7 @@
         _panel.difficulty.value = _panelOwner.getSetting('difficulty');
         _panel.lefty.checked = !!_panelOwner.getSetting('lefty');
         _panel.gamepadMode.checked = !!_panelOwner.getSetting('gamepadMode');
+        _quickSyncAll();
     }
 
     function _unmountPanel(owner) {
@@ -303,6 +330,10 @@
         // binding stays set while the claim is parked (paused / no part), so the gamepad mode, and with
         // it the session, does not change across a pause.
         let handle = null, handleInfo = null, binding = null, mapper = null, connected = false, offChange = null;
+        // The last controller this instance held (the quick settings' input offset while paused).
+        let lastKey = null;
+        // What the quick settings last saw of this instance (they re-sync when it changes).
+        let quickPart = null, quickKey = null;
         // wantClaim: a part is playing (see "Claim" above). readyKind: while no controller is held, the
         // binding kind of the one tryClaim would take (null: none), for the header and status while paused.
         let wantClaim = false, readyKind = null, claiming = false;
@@ -351,6 +382,10 @@
                 pick.partId = H.pickPart(parts, arrangement, setting, exact ? { exact: true, showAuto } : { showAuto });
             }
             return pick.partId;
+        }
+
+        function quickControllerKey() {
+            return handle ? handle.controllerKey : (pin ? pin.controllerKey : lastKey);
         }
 
         function gamepadMode() {
@@ -464,6 +499,7 @@
                     if (!b) { h.release(); continue; }
                     handle = h;
                     handleInfo = c.info;
+                    lastKey = h.controllerKey;
                     useBinding(b);
                     connected = true;
                     h.addListener(onEvent);
@@ -667,7 +703,8 @@
             token++;
             wireBus(false);
             releaseController();
-            binding = null; wantClaim = false; readyKind = null;
+            binding = null; wantClaim = false; readyKind = null; lastKey = null;
+            quickPart = quickKey = null;
             _unmountPanel(instance);
             if (canvas && _byCanvas.get(canvas) === instance) _byCanvas.delete(canvas);
             pin = null;
@@ -755,6 +792,10 @@
                     if (!want) dropHandle(true);
                     tryClaim();
                 }
+                if (_quick.size) {
+                    const qk = quickControllerKey();
+                    if (partId !== quickPart || qk !== quickKey) { quickPart = partId; quickKey = qk; _quickSyncAll(); }
+                }
 
                 frame.now = t;
                 frame.notes = session ? session.notes : EMPTY;
@@ -765,7 +806,7 @@
                 frame.whammy = session ? session.whammy() : 0;
                 frame.state = session ? session.state() : null;
                 frame.lefty = !!cur().lefty;
-                frame.scoreHidden = _scoreHidden.get(canvas) === true;
+                frame.scoreHidden = _scoreHidden.get(canvas) === true || (!pin && _rhsAdoptsSolo());
                 frame.header = part ? headerFor(part) : '';
                 frame.sourceKind = part ? part.sourceKind : '';
                 statusArgs.hasParts = !!part;
@@ -820,6 +861,16 @@
                     _mountPanel(instance);
                 }
             },
+            // What the quick settings show for this instance (quickSettingsModel's inputs).
+            _quickInfo() {
+                const c = cur();
+                return {
+                    parts: pick.parts, playing: session && built.part ? built.part.instrument : null,
+                    current: { part: c.part, difficulty: c.difficulty, lefty: !!c.lefty },
+                    controllerKey: quickControllerKey(), showAuto: !!settings.showAutoCharts, lane: !!pin,
+                };
+            },
+            _canvas() { return canvas; },
             // Engine state plus what the band needs, or null with no session.
             _bandState() {
                 if (!session || !built.part) return null;
@@ -1003,6 +1054,7 @@
             _lanes.set(canvas, { controllerKey, part, difficulty, lefty });
             const inst = _byCanvas.get(canvas);
             if (inst) inst._pinChanged();
+            _quickSyncAll();
             return true;
         },
         // Forget the pin: the instance goes back to its own settings and claim order.
@@ -1011,12 +1063,14 @@
             _lanes.delete(canvas);
             const inst = _byCanvas.get(canvas);
             if (inst) inst._pinChanged();
+            _quickSyncAll();
         },
         // A pinned lane's difficulty (drums parity). false for an unpinned canvas or a bad id.
         setDifficulty(id, canvas) {
             const lane = _canvasArg(canvas) ? _lanes.get(canvas) : null;
             if (!lane || !Object.prototype.hasOwnProperty.call(DIFFICULTY_LABELS, id)) return false;
             lane.difficulty = id;   // the instance reads it on its next draw
+            _quickSyncAll();
             return true;
         },
         // Hide (true) or show (false) that lane's score, multiplier, streak, SP bar and stars.
@@ -1078,6 +1132,13 @@
             window.playSong(encodeURIComponent(filename));
             return true;
         },
+        // In-song settings for one lane in `el`: difficulty, part (the parts the song has), lefty and the
+        // controller's input offset, applied live. canvas: that lane (a band lane's pin, or the instance
+        // drawing on it); none: the normal player. controllerKey: whose offset (default: the lane's
+        // controller). -> { destroy() }. The controls fill in once the plugin's scripts have loaded.
+        mountQuickSettings(el, opts) {
+            return _mountQuickSettings(el, opts);
+        },
         // Show the controls screen; its Back button goes to returnTo (default 'home') for this visit.
         openControls(opts) {
             const to = opts && typeof opts.returnTo === 'string' && opts.returnTo ? opts.returnTo : 'home';
@@ -1086,6 +1147,137 @@
             window.showScreen(SCREEN_ID);
         },
     };
+
+    // ── Quick settings (feedBackFiveFret.mountQuickSettings) ───────────────────
+
+    const _quick = new Set();   // mounted quick settings ({ sync })
+    function _quickSyncAll() {
+        for (const q of _quick) { try { q.sync(); } catch (e) { console.warn('[5-Fret] quick settings sync failed:', e); } }
+    }
+    // The lane quick settings act on: the given canvas, else the normal player's (or core's #highway).
+    function _quickCanvas(canvas) {
+        if (_canvasArg(canvas)) return canvas;
+        if (_panelOwner) return _panelOwner._canvas();
+        try { return document.getElementById('highway') || null; } catch (_) { return null; }
+    }
+
+    function _mountQuickSettings(host, opts) {
+        const none = { destroy() {} };
+        if (!host || typeof host.appendChild !== 'function') return none;
+        opts = opts && typeof opts === 'object' ? opts : {};
+        const root = document.createElement('div');
+        root.className = 'five-fret-quick text-fb-text';
+        root.dataset.ff = 'quick-settings';
+        root.style.cssText = 'display:flex;flex-direction:column;gap:6px;font-size:12px;';
+        host.appendChild(root);
+        let q = null, destroyed = false;
+        _loadControls().then(({ P, C }) => {
+            if (destroyed) return;
+            q = _buildQuick(root, opts, P, C);
+            _quick.add(q);
+        }).catch((e) => {
+            console.error('[5-Fret] quick settings failed to load:', e);
+            if (!destroyed) _listNote(root, 'The 5-Fret scripts failed to load.');
+        });
+        return {
+            destroy() {
+                if (destroyed) return;
+                destroyed = true;
+                if (q) { _quick.delete(q); q.destroy(); }
+                try { root.remove(); } catch (_) { /* gone */ }
+            },
+        };
+    }
+
+    function _buildQuick(root, opts, P, C) {
+        const tag = (control, ff) => { control.dataset.ff = ff; return control; };
+        const difficulty = tag(_row(root, 'Difficulty', _select(DIFFICULTY_LABELS)), 'qs-difficulty');
+        const part = tag(_row(root, 'Part', _select({})), 'qs-part');
+        const lefty = tag(_row(root, 'Lefty', _check()), 'qs-lefty');
+        const offset = tag(_row(root, 'Input offset (ms)', C.offsetInput()), 'qs-offset');
+        let partSig = null, model = null, cv = null;
+
+        function info() {
+            cv = _quickCanvas(opts.canvas);
+            const lane = cv ? _lanes.get(cv) || null : null;
+            const inst = cv ? _byCanvas.get(cv) || null : null;
+            const saved = P.loadSettings();
+            const i = inst ? inst._quickInfo()
+                : { parts: null, playing: null, current: lane || saved, showAuto: saved.showAutoCharts,
+                    controllerKey: lane ? lane.controllerKey : null, lane: !!lane };
+            if (typeof opts.controllerKey === 'string' && opts.controllerKey) i.controllerKey = opts.controllerKey;
+            i.offsetMs = saved.offsetMs;
+            return i;
+        }
+        function show(control, on) {
+            const r = control.parentNode;
+            if (!r) return;
+            r.hidden = !on;
+            r.style.display = on ? 'flex' : 'none';
+        }
+        function sync() {
+            model = C.quickSettingsModel(info());
+            difficulty.value = model.difficulty.value;
+            lefty.checked = model.lefty.value;
+            show(part, !!model.part);
+            if (model.part) {
+                const sig = model.part.options.map((o) => o.id + (o.auto ? '*' : '')).join(',') + (model.part.value === null ? '|-' : '');
+                if (sig !== partSig) {
+                    partSig = sig;
+                    const items = model.part.options.map((o) => ({ id: o.id, label: o.auto ? o.label + ' (auto)' : o.label }));
+                    if (model.part.value === null) items.unshift({ id: '', label: '—', disabled: true });
+                    _fillSelect(part, items);
+                }
+                part.value = model.part.value === null ? '' : model.part.value;
+            }
+            show(offset, !!model.offset);
+            if (model.offset) offset.value = String(model.offset.value);
+        }
+        // One setting, applied live: a band lane's pin (never saved), else the same path as the panel.
+        function apply(key, value) {
+            const lane = cv ? _lanes.get(cv) || null : null;
+            if (lane) {
+                if (key === 'difficulty') window.feedBackFiveFret.setDifficulty(value, cv);
+                else window.feedBackFiveFret.setLane(cv, Object.assign({}, lane, { [key]: value }));
+            } else {
+                const inst = cv ? _byCanvas.get(cv) || null : null;
+                if (inst && inst !== _panelOwner) inst.applySetting(key, value);   // a splitscreen panel's own
+                else _saveSetting(key, value);
+            }
+            _emit(EV_QUICK, { canvas: cv, controllerKey: model && model.offset ? model.offset.controllerKey
+                : (lane ? lane.controllerKey : null), key, value, lane: !!lane });
+            _quickSyncAll();
+        }
+        const onDifficulty = () => { if (_validSetting('difficulty', difficulty.value)) apply('difficulty', difficulty.value); };
+        const onPart = () => { if (Object.prototype.hasOwnProperty.call(LANE_PARTS, part.value)) apply('part', part.value); else sync(); };
+        const onLefty = () => apply('lefty', !!lefty.checked);
+        const onOffset = () => {
+            const key = model && model.offset ? model.offset.controllerKey : null;
+            const ms = C.parseOffset(offset.value);
+            if (!key || ms === null) { sync(); return; }
+            P.setOffset(key, ms);
+            _emit(EV_OFFSET, { controllerKey: key, offsetMs: ms });
+            sync();
+        };
+        const onBusOffset = () => sync();   // the controls screen (or another quick panel) saved one
+        difficulty.addEventListener('change', onDifficulty);
+        part.addEventListener('change', onPart);
+        lefty.addEventListener('change', onLefty);
+        offset.addEventListener('change', onOffset);
+        const bus = _bus();
+        if (bus) { try { bus.on(EV_OFFSET, onBusOffset); } catch (_) { /* ignore */ } }
+        sync();
+        return {
+            sync,
+            destroy() {
+                difficulty.removeEventListener('change', onDifficulty);
+                part.removeEventListener('change', onPart);
+                lefty.removeEventListener('change', onLefty);
+                offset.removeEventListener('change', onOffset);
+                if (bus && typeof bus.off === 'function') { try { bus.off(EV_OFFSET, onBusOffset); } catch (_) { /* ignore */ } }
+            },
+        };
+    }
 
     // A setting (part, difficulty), saved (five_fret.settings.v1) and applied to the normal player's instance.
     function _saveSetting(key, value) {

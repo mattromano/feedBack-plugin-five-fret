@@ -200,7 +200,24 @@ await ff.createMapper(controllerKey);    // { map(ev) -> [{ action, value }] } |
 ff.showAutoCharts();                     // the saved "show auto charts" flag, default false
 ff.openControls({ returnTo: 'plugin-build_a_band' });
 ff.playOnPart('song.sloppak', 'bass', 'hard');   // main player: that part (and difficulty), 5-Fret view for this play only
+const qs = ff.mountQuickSettings(el, { canvas, controllerKey });   // in-song settings; qs.destroy()
 ```
+
+- **`mountQuickSettings(el, { canvas?, controllerKey? })`** puts in-song settings for one lane in `el`
+  and returns `{ destroy() }`: difficulty, part (only the instruments the song has; hidden when there
+  is nothing to switch to), lefty and the controller's input offset (step 5, ±200 ms; hidden until a
+  controller has played). Changes apply live. With a band lane's `canvas` they change its pin
+  (`setLane` / `setDifficulty`) and are never saved; otherwise (no `canvas`: the normal player) they go
+  through the same path as the 5-Fret panel and are saved as the defaults. `controllerKey` picks whose
+  offset is shown (default: the lane's controller). Every change emits `five_fret:quick-setting`
+  `{ canvas, controllerKey, key, value, lane }` so a band host can keep its own per-player prefs in
+  step. The controls fill in once the plugin's scripts load; they follow changes made elsewhere (the
+  panel, `setLane`, `setDifficulty`, the controls screen). Which controls show is
+  `FiveFretControls.quickSettingsModel` (`assets/controls.js`, pure).
+- **Score HUD with RockHeroSmith.** A renderer that is not a band lane hides its score HUD (as
+  `setScoreHudHidden`) while `window.rockHeroSmith.adoptsSolo()` returns true: RockHeroSmith then
+  scores the solo play with its own HUD and results. Without RockHeroSmith, or one without
+  `adoptsSolo` or with it off, the 5-fret HUD shows as before.
 
 - **`playOnPart(filename, part, difficulty?)`** plays a library song (unencoded filename) in the main
   player on one part (`guitar` | `rhythm` | `bass`), optionally at a difficulty (`easy` | `medium` |
