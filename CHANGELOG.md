@@ -14,8 +14,9 @@ All notable changes to the 5-Fret plugin. The format follows
   and `offsetInput`, shared by the controls screen and the quick settings.
 
 ### Changed
-- With RockHeroSmith adopting solo plays (`rockHeroSmith.adoptsSolo()` true), an unpinned renderer
-  hides its score HUD and RockHeroSmith's HUD scores the play. Without it nothing changes.
+- With RockHeroSmith adopting solo plays (`rockHeroSmith.adoptsSolo()` true), the renderer on the main
+  view (`#highway`, split view off, not a band lane) hides its score HUD and RockHeroSmith's HUD scores
+  the play; split-screen panels keep theirs. Without it nothing changes.
 - The 5-Fret panel and the quick settings build their rows with the same helpers.
 
 ## [0.3.0] - Unreleased

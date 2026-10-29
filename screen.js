@@ -37,8 +37,9 @@
  * for one lane, applied live through the same paths as the panel (applySetting / _saveSetting) or, for a
  * band lane, setLane / setDifficulty. Which controls show is assets/controls.js quickSettingsModel.
  *
- * Score HUD fallback: an unpinned instance shows its score HUD only while RockHeroSmith is absent or
- * does not adopt solo plays (rockHeroSmith.adoptsSolo()); when it does, RockHeroSmith's HUD scores them.
+ * Score HUD fallback: an unpinned instance on core's main view (#highway, split view off) hides its
+ * score HUD while rockHeroSmith.adoptsSolo() is true (RockHeroSmith's HUD scores the play). Split
+ * panels and other canvases are never adopted, so they keep theirs.
  *
  * It also opens and closes the plugin's controls screen (screen.html, #plugin-five_fret; the screen
  * itself is assets/controls.js). See "Controls screen hook" below.
@@ -187,6 +188,11 @@
     function _rhsAdoptsSolo() {
         const rhs = window.rockHeroSmith;
         try { return !!(rhs && typeof rhs.adoptsSolo === 'function' && rhs.adoptsSolo() === true); } catch (_) { return false; }
+    }
+    // RockHeroSmith adopts only core's main view (#highway) with split view off, never a split panel
+    // (as the drums plugin's _adoptedLane).
+    function _rhsAdoptsLane(canvas) {
+        return !!(canvas && typeof canvas === 'object' && canvas.id === 'highway' && !_ssActive() && _rhsAdoptsSolo());
     }
 
     // Settings values a control may set (anything else is ignored).
@@ -806,7 +812,7 @@
                 frame.whammy = session ? session.whammy() : 0;
                 frame.state = session ? session.state() : null;
                 frame.lefty = !!cur().lefty;
-                frame.scoreHidden = _scoreHidden.get(canvas) === true || (!pin && _rhsAdoptsSolo());
+                frame.scoreHidden = _scoreHidden.get(canvas) === true || (!pin && _rhsAdoptsLane(canvas));
                 frame.header = part ? headerFor(part) : '';
                 frame.sourceKind = part ? part.sourceKind : '';
                 statusArgs.hasParts = !!part;

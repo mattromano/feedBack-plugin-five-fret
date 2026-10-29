@@ -214,9 +214,10 @@ const qs = ff.mountQuickSettings(el, { canvas, controllerKey });   // in-song se
   step. The controls fill in once the plugin's scripts load; they follow changes made elsewhere (the
   panel, `setLane`, `setDifficulty`, the controls screen). Which controls show is
   `FiveFretControls.quickSettingsModel` (`assets/controls.js`, pure).
-- **Score HUD with RockHeroSmith.** A renderer that is not a band lane hides its score HUD (as
-  `setScoreHudHidden`) while `window.rockHeroSmith.adoptsSolo()` returns true: RockHeroSmith then
-  scores the solo play with its own HUD and results. Without RockHeroSmith, or one without
+- **Score HUD with RockHeroSmith.** The renderer on core's main view (canvas `#highway`, split view
+  off, not a band lane) hides its score HUD (as `setScoreHudHidden`) while
+  `window.rockHeroSmith.adoptsSolo()` returns true: RockHeroSmith then scores the solo play with its
+  own HUD and results. Split-screen panels and other canvases are never adopted and keep theirs. Without RockHeroSmith, or one without
   `adoptsSolo` or with it off, the 5-fret HUD shows as before.
 
 - **`playOnPart(filename, part, difficulty?)`** plays a library song (unencoded filename) in the main

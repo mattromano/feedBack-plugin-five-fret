@@ -1740,7 +1740,9 @@ test('mountQuickSettings: no element is a no-op; destroy before load builds noth
 test('the 5-fret score HUD shows only when RockHeroSmith is absent or does not adopt solo plays', async (t) => {
     const env = setup(t);
     const ff = parts();
-    const r = await started(env);
+    const main = fakeElement('canvas');
+    main.id = 'highway';   // core's main view: the only one RockHeroSmith adopts
+    const r = await startedOn(env, main);
     r.draw(bundleAt(0, ff));
     assert.equal(env.last().scoreHidden, false);
     env.win.rockHeroSmith = { version: 1 };   // an older RockHeroSmith: no adoptsSolo
@@ -1755,8 +1757,23 @@ test('the 5-fret score HUD shows only when RockHeroSmith is absent or does not a
     env.win.rockHeroSmith.adoptsSolo = () => { throw new Error('boom'); };
     r.draw(bundleAt(4 * FRAME, ff));
     assert.equal(env.last().scoreHidden, false);
-    // A band lane follows setScoreHudHidden only (RockHeroSmith hides it itself).
+    // Split view on: RockHeroSmith adopts no panel, so even #highway keeps its HUD.
     env.win.rockHeroSmith.adoptsSolo = () => true;
+    env.win.slopsmithSplitscreen = { isActive: () => true };
+    r.draw(bundleAt(5 * FRAME, ff));
+    assert.equal(env.last().scoreHidden, false);
+    const panel = fakeElement('canvas');
+    panel.id = 'ss-highway-1';
+    const rp = await startedOn(env, panel);
+    rp.draw(bundleAt(0, ff));
+    assert.equal(env.last().scoreHidden, false);
+    delete env.win.slopsmithSplitscreen;
+    r.draw(bundleAt(6 * FRAME, ff));
+    assert.equal(env.last().scoreHidden, true);
+    // Another canvas (not #highway) is never adopted, split view or not.
+    rp.draw(bundleAt(FRAME, ff));
+    assert.equal(env.last().scoreHidden, false);
+    // A band lane follows setScoreHudHidden only (RockHeroSmith hides it itself).
     const cv = fakeElement('canvas');
     env.win.feedBackFiveFret.setLane(cv, lane({ controllerKey: 'Pad#1' }));
     const rl = await startedOn(env, cv);
