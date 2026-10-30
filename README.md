@@ -192,7 +192,8 @@ const ff = window.feedBackFiveFret;
 ff.setLane(canvas, { controllerKey: 'Xbox Wireless Controller#2', part: 'bass', difficulty: 'expert', lefty: false });
 ff.setDifficulty('hard', canvas);
 ff.getDifficulty(canvas);                // the lane's pinned difficulty; no canvas: the saved setting
-ff.setScoreHudHidden(canvas, true);      // ff.isScoreHudHidden(canvas)
+ff.setScoreHudHidden(canvas, true);      // true | false | 'score'; ff.isScoreHudHidden(canvas) -> the mode
+ff.hudModes();                           // ['score']: the partial modes setScoreHudHidden takes
 ff.getInstanceState(canvas);             // null, or getState() + { starThresholds, partId, instrument,
                                          //   sourceKind, difficulty, controllerKey, connected }
 ff.clearLane(canvas);
@@ -215,11 +216,16 @@ const qs = ff.mountQuickSettings(el, { canvas, controllerKey });   // in-song se
   step. The controls fill in once the plugin's scripts load; they follow changes made elsewhere (the
   panel, `setLane`, `setDifficulty`, the controls screen). Which controls show is
   `FiveFretControls.quickSettingsModel` (`assets/controls.js`, pure).
-- **Score HUD with RockHeroSmith.** The renderer on core's main view (canvas `#highway`, split view
-  off, not a band lane) hides its score HUD (as `setScoreHudHidden`) while
-  `window.rockHeroSmith.adoptsSolo()` returns true: RockHeroSmith then scores the solo play with its
-  own HUD and results. Split-screen panels and other canvases are never adopted and keep theirs. Without RockHeroSmith, or one without
-  `adoptsSolo` or with it off, the 5-fret HUD shows as before.
+- **`setScoreHudHidden(canvas, mode)`**: `true` hides the lane's score panels (star power meter,
+  score, stars, accuracy, timing, multiplier, streak, score pops, header tag) and keeps the highway
+  effects, combo rings, milestone bursts, the solo percent and the toasts. `'score'` hides only the
+  score number, the stars and the accuracy line; the streak, multiplier ring, score pops, combo rings
+  and milestone bursts, FULL COMBO, the early/late meter (moved up under the meter), the star power
+  meter, the header tag and the hit effects stay. `false` shows everything. `isScoreHudHidden(canvas)`
+  returns the mode.
+- **Score HUD with RockHeroSmith.** The lane HUD always shows, also while
+  `window.rockHeroSmith.adoptsSolo()` is true; RockHeroSmith can ask for a mode with
+  `setScoreHudHidden`. (0.3.1 hid it on the adopted `#highway` view.)
 
 - **`playOnPart(filename, part, difficulty?)`** plays a library song (unencoded filename) in the main
   player on one part (`guitar` | `rhythm` | `bass`), optionally at a difficulty (`easy` | `medium` |

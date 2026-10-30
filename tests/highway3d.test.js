@@ -333,7 +333,7 @@ test('3D view: the HUD draws the score panels; a hidden score HUD keeps the high
                 h.input('yellow', 0, ti + 0.1);
                 h.to(ti + 0.12);
             }
-            return { snap, texts: texts.slice(), sawRing, view: h.view };
+            return { snap, texts: texts.slice(), sawRing, view: h.view, score: h.s.state().score.toLocaleString('en-US') };
         } finally { h.done(); }
     };
     const shown = run(false);
@@ -356,6 +356,41 @@ test('3D view: the HUD draws the score panels; a hidden score HUD keeps the high
     assert.ok(!hidden.texts.some((t) => t.startsWith('STAR POWER') || t.startsWith('Accuracy') || /^\+\d+$/.test(t)));
     assert.ok(hidden.sawRing, 'the streak ring still shows on the highway');
     assert.ok(hidden.snap.flashHit[2] || hidden.snap.sparksLive > 0, 'hit effects still show');
+});
+
+test("3D view: hideScore 'score' leaves out only the score number, stars and accuracy", () => {
+    const notes = [];
+    for (let i = 0; i < 12; i++) notes.push({ t: 1 + i * 0.25, f: Y });
+    const { hud, texts } = recordingHud();
+    const h = sceneHarness(notes, { hudCanvas: hud });
+    h.frame.scoreHidden = 'score';
+    let sawRing = false, snap = null;
+    try {
+        h.to(0.99);
+        for (let i = 0; i < 10; i++) {
+            const ti = 1 + i * 0.25;
+            h.input('yellow', 1, ti);
+            snap = h.to(ti);
+            sawRing = sawRing || snap.ring;
+            h.input('yellow', 0, ti + 0.1);
+            h.to(ti + 0.12);
+        }
+        const score = h.s.state().score.toLocaleString('en-US');
+        assert.ok(h.s.state().score > 0);
+        assert.ok(!texts.includes(score), 'no score number: ' + score);
+        assert.ok(!texts.some((t) => t.startsWith('Accuracy')), 'no accuracy line');
+        assert.equal(snap.hudScore, false, 'the score number is not drawn');
+        assert.ok(texts.includes('NOTE STREAK'));
+        assert.ok(texts.includes('10'), 'the big streak number');
+        assert.ok(texts.includes('FULL COMBO'));
+        assert.ok(texts.some((t) => /^x\d$/.test(t)), 'multiplier ring');
+        assert.ok(texts.some((t) => t.startsWith('STAR POWER')), 'star power meter');
+        assert.ok(texts.includes('TIMING'), 'early/late meter');
+        assert.ok(texts.includes('GUITAR · PAD · EXPERT'), 'header tag (difficulty)');
+        assert.ok(texts.some((t) => /^\+\d+$/.test(t)), 'score pops');
+        assert.ok(sawRing, 'combo ring');
+        assert.ok(snap.flashHit[2] || snap.sparksLive > 0, 'hit effects');
+    } finally { h.done(); }
 });
 
 test('3D view: lefty mirrors the lanes; a narrow band lane gets the compact layout', () => {
