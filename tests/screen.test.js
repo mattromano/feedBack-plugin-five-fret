@@ -1737,7 +1737,7 @@ test('mountQuickSettings: no element is a no-op; destroy before load builds noth
     assert.equal(host.children.length, 0);
 });
 
-test('the 5-fret score HUD shows only when RockHeroSmith is absent or does not adopt solo plays', async (t) => {
+test('the 5-fret lane HUD always shows in an adopted solo play; RockHeroSmith can ask for a mode', async (t) => {
     const env = setup(t);
     const ff = parts();
     const main = fakeElement('canvas');
@@ -1745,40 +1745,50 @@ test('the 5-fret score HUD shows only when RockHeroSmith is absent or does not a
     const r = await startedOn(env, main);
     r.draw(bundleAt(0, ff));
     assert.equal(env.last().scoreHidden, false);
-    env.win.rockHeroSmith = { version: 1 };   // an older RockHeroSmith: no adoptsSolo
+    env.win.rockHeroSmith = { version: 1, adoptsSolo: () => true };
     r.draw(bundleAt(FRAME, ff));
-    assert.equal(env.last().scoreHidden, false);
-    env.win.rockHeroSmith.adoptsSolo = () => false;
+    assert.equal(env.last().scoreHidden, false, 'adopted: the lane HUD still shows');
+    env.win.rockHeroSmith.adoptsSolo = () => { throw new Error('boom'); };
     r.draw(bundleAt(2 * FRAME, ff));
     assert.equal(env.last().scoreHidden, false);
+    // RockHeroSmith asks the adopted view for a mode itself.
     env.win.rockHeroSmith.adoptsSolo = () => true;
+    assert.equal(env.win.feedBackFiveFret.setScoreHudHidden(main, 'score'), true);
     r.draw(bundleAt(3 * FRAME, ff));
-    assert.equal(env.last().scoreHidden, true);
-    env.win.rockHeroSmith.adoptsSolo = () => { throw new Error('boom'); };
+    assert.equal(env.last().scoreHidden, 'score');
+    env.win.feedBackFiveFret.setScoreHudHidden(main, false);
     r.draw(bundleAt(4 * FRAME, ff));
     assert.equal(env.last().scoreHidden, false);
-    // Split view on: RockHeroSmith adopts no panel, so even #highway keeps its HUD.
-    env.win.rockHeroSmith.adoptsSolo = () => true;
-    env.win.slopsmithSplitscreen = { isActive: () => true };
-    r.draw(bundleAt(5 * FRAME, ff));
-    assert.equal(env.last().scoreHidden, false);
-    const panel = fakeElement('canvas');
-    panel.id = 'ss-highway-1';
-    const rp = await startedOn(env, panel);
-    rp.draw(bundleAt(0, ff));
-    assert.equal(env.last().scoreHidden, false);
-    delete env.win.slopsmithSplitscreen;
-    r.draw(bundleAt(6 * FRAME, ff));
-    assert.equal(env.last().scoreHidden, true);
-    // Another canvas (not #highway) is never adopted, split view or not.
-    rp.draw(bundleAt(FRAME, ff));
-    assert.equal(env.last().scoreHidden, false);
-    // A band lane follows setScoreHudHidden only (RockHeroSmith hides it itself).
+    // A band lane follows setScoreHudHidden only.
     const cv = fakeElement('canvas');
     env.win.feedBackFiveFret.setLane(cv, lane({ controllerKey: 'Pad#1' }));
     const rl = await startedOn(env, cv);
     rl.draw(bundleAt(0, ff));
     assert.equal(env.last().scoreHidden, false);
+});
+
+test("setScoreHudHidden(canvas, 'score') and hudModes(): a partial mode per canvas", async (t) => {
+    const env = setup(t, { pads: [{ id: 'Xbox', mapping: 'standard' }] });
+    const api = env.win.feedBackFiveFret;
+    assert.deepEqual(api.hudModes(), ['score']);
+    api.hudModes().push('junk');
+    assert.deepEqual(api.hudModes(), ['score'], 'a fresh array each call');
+    const a = fakeElement('canvas');
+    api.setLane(a, lane());
+    const ra = await startedOn(env, a);
+    assert.equal(api.setScoreHudHidden(a, 'score'), true);
+    assert.equal(api.isScoreHudHidden(a), 'score');
+    ra.draw(bundleAt(0, parts()));
+    assert.equal(env.last().scoreHidden, 'score');
+    assert.equal(api.setScoreHudHidden(a, 'stars'), false, 'an unknown mode is junk');
+    assert.equal(api.isScoreHudHidden(a), 'score', 'junk changes nothing');
+    assert.equal(api.setScoreHudHidden(a, true), true);
+    assert.equal(api.isScoreHudHidden(a), true);
+    ra.draw(bundleAt(FRAME, parts()));
+    assert.equal(env.last().scoreHidden, true);
+    assert.equal(api.setScoreHudHidden(a, false), true);
+    assert.equal(api.isScoreHudHidden(a), false);
+    assert.equal(api.setScoreHudHidden(null, 'score'), false);
 });
 
 test('getDifficulty: a lane\'s pinned difficulty, else the instance\'s, else the saved setting', async (t) => {

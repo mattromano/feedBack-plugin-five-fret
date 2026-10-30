@@ -3,6 +3,20 @@
 All notable changes to the 5-Fret plugin. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow `plugin.json`.
 
+## [0.3.2] - Unreleased
+
+### Added
+- **HUD modes.** `feedBackFiveFret.setScoreHudHidden(canvas, 'score')` hides only the lane's score
+  number, stars and accuracy line; the streak, multiplier ring, score pops, combo rings and milestone
+  bursts, FULL COMBO, the early/late meter (moved up under the star power meter), the star power meter,
+  the header tag and the hit effects stay. `true` / `false` work as before. `isScoreHudHidden(canvas)`
+  returns the mode (`true`, `false` or `'score'`), and `hudModes()` returns `['score']`.
+
+### Changed
+- With RockHeroSmith adopting a solo play, the main view keeps its full lane HUD (0.3.1 hid it, which
+  left an almost empty screen). RockHeroSmith can still ask for a mode with `setScoreHudHidden`.
+- Asset version bumped.
+
 ## [0.3.1] - Unreleased
 
 ### Added

@@ -22,9 +22,11 @@
  * (READY / ACTIVE, pulsing), a big score, stars, accuracy, an early / late timing meter, the multiplier
  * ring with its progress arc, the NOTE STREAK, FULL COMBO, score pops, a combo ring every 10 notes,
  * bursts at 25 / 50 / every 100 and toasts (star power, phrases, solos), plus the header tag, AUTO CHART,
- * the solo percent and a status message. A band lane (frame.scoreHidden) keeps every highway effect,
+ * the solo percent and a status message. A band lane (frame.scoreHidden true) keeps every highway effect,
  * the streak ring / bursts / break wash, the solo percent and the toasts, and leaves out the score
  * panels (meter, score, stars, accuracy, timing, multiplier, streak, score pops, header tag).
+ * frame.scoreHidden 'score' leaves out only the score number, stars and accuracy; the timing meter
+ * moves up under the star power meter.
  *
  * Exported on window.FiveFretHighway3D (browser) and module.exports (Node tests):
  *   createView(THREE, canvas, { hudCanvas, context }) ->
@@ -45,7 +47,7 @@
  *   noteState(i): engine noteState ('held' while the sustain is active, 'hit', 'miss' or null);
  *   state: engine getState(); header: "PART · INPUT · DIFFICULTY";
  *   sourceKind 'auto' shows AUTO CHART; message (optional): a status line drawn over the highway;
- *   scoreHidden (a band lane): see above.
+ *   scoreHidden (a band lane): true, 'score' or false; see above.
  */
 (function (root, factory) {
     'use strict';
@@ -218,6 +220,7 @@
             col: { x: colX, y: colY, w: colW, h: colH },
             meterY, meterH: 14 * s, scoreY, starsY, accY,
             timingY: wide ? accY + 26 * s : null,                  // null: no timing meter (compact)
+            timingNoScoreY: wide ? meterY + 14 * s + 30 * s : null,  // ...without score / stars / accuracy
             mult: { x: multX, y: multY, r },
             streakY: multY - r - 28 * s, streakLabelY: multY - r - 12 * s, fullComboY: multY + r + 18 * s,
             toastY: Math.max(top + 24 * s, h * 0.2),
@@ -1200,6 +1203,7 @@
             if (!hctx || !hud) return;
             const m = model;
             const scoreHidden = frame.scoreHidden === true;
+            const scoreOnly = frame.scoreHidden === 'score';   // hide only the score, stars and accuracy
             const header = typeof frame.header === 'string' ? frame.header : '';
             const auto = frame.sourceKind === 'auto';
             const message = typeof frame.message === 'string' && frame.message ? frame.message : null;
@@ -1210,14 +1214,14 @@
             // after an animation ends, to clear it).
             if (!animating && !hudLast.animating && hudLast.hasState === !!state && hudLast.score === m.score
                 && hudLast.combo === m.combo && hudLast.mult === m.mult && hudLast.sp === m.spAmount
-                && hudLast.stars === m.stars && hudLast.timing === timingVersion && hudLast.scoreHidden === scoreHidden
+                && hudLast.stars === m.stars && hudLast.timing === timingVersion && hudLast.scoreHidden === frame.scoreHidden
                 && hudLast.header === header && hudLast.auto === auto && hudLast.message === message
                 && hudLast.solo === solo && hudLast.soloHit === soloHit && hudLast.soloTotal === soloTotal
                 && hudLast.hit === (state ? state.notesHit : -1) && hudLast.missed === (state ? state.notesMissed : -1)
                 && !hudLast.dirty) return;
             hudLast.animating = animating; hudLast.hasState = !!state; hudLast.score = m.score; hudLast.combo = m.combo;
             hudLast.mult = m.mult; hudLast.sp = m.spAmount; hudLast.stars = m.stars; hudLast.timing = timingVersion;
-            hudLast.scoreHidden = scoreHidden; hudLast.header = header; hudLast.auto = auto; hudLast.message = message;
+            hudLast.scoreHidden = frame.scoreHidden; hudLast.header = header; hudLast.auto = auto; hudLast.message = message;
             hudLast.solo = solo; hudLast.soloHit = soloHit; hudLast.soloTotal = soloTotal;
             hudLast.hit = state ? state.notesHit : -1; hudLast.missed = state ? state.notesMissed : -1;
             hudLast.dirty = false;
@@ -1262,8 +1266,8 @@
 
             hudDrewScore = false;
             if (!scoreHidden && state) {
-                hudDrewScore = true;
-                drawScoreColumn(ctx, wall, s);
+                hudDrewScore = !scoreOnly;
+                drawScoreColumn(ctx, wall, s, scoreOnly);
                 drawMultiplier(ctx, s);
             }
             drawScoreFx(ctx, wall, s, scoreHidden);
@@ -1315,8 +1319,9 @@
         }
 
         // Star power meter, score, stars, accuracy and (wide) the early / late meter.
-        function drawScoreColumn(ctx, wall, s) {
-            const m = model, ht = hudText, F = fonts;
+        // scoreOnly: no score number, stars or accuracy; the timing meter sits under the star power meter.
+        function drawScoreColumn(ctx, wall, s, scoreOnly) {
+            const m = model, F = fonts;
             const x = lay.col.x, mw = lay.col.w, my = lay.meterY, mh = lay.meterH;
             ctx.textAlign = 'left';
             ctx.shadowColor = 'rgba(0,0,0,0.8)';
@@ -1339,6 +1344,52 @@
             for (let q = 1; q < 4; q++) { const qx = x + mw * q / 4; ctx.moveTo(qx, my + 1); ctx.lineTo(qx, my + mh - 1); }
             ctx.stroke();
 
+            const ty = scoreOnly ? lay.timingNoScoreY : lay.timingY;
+            if (!scoreOnly) drawScoreStarsAccuracy(ctx, s);
+            if (ty === null) return;
+            // Early / late meter: the last hits as ticks on a +-100 ms bar (blue early, orange late) and
+            // their median.
+            ctx.textAlign = 'left';
+            ctx.font = F.label;
+            ctx.fillStyle = '#7a84a6';
+            if (!timingCount) { ctx.fillText('TIMING · waiting for hits', x, ty); return; }
+            ctx.fillText('TIMING', x, ty);
+            const med = medianTiming();
+            if (med !== timingWordMedian) {
+                timingWordMedian = med;
+                timingWord = Math.abs(med) <= HIT_FX.onTimeMs ? 'ON TIME'
+                    : (med > 0 ? '+' : '') + Math.round(med) + ' ms ' + (med < 0 ? 'EARLY' : 'LATE');
+            }
+            ctx.font = F.timing;
+            ctx.fillStyle = timingCss(med);
+            ctx.fillText(timingWord, x + 56 * s, ty);
+            const bw = lay.col.w, bh = 10 * s, by = ty + 6 * s;
+            ctx.fillStyle = 'rgba(10,14,30,0.85)';
+            ctx.fillRect(x, by, bw, bh);
+            ctx.fillStyle = 'rgba(160,170,200,0.5)';
+            ctx.fillRect(x + bw / 2 - 0.5, by, 1, bh);
+            for (let k = 0; k < timingCount; k++) {
+                // oldest first: index from timingNext back
+                const idx = (timingNext - timingCount + k + TIMING_N) % TIMING_N;
+                const ms = timing[idx];
+                ctx.globalAlpha = 0.25 + 0.75 * (k + 1) / timingCount;
+                ctx.fillStyle = timingCss(ms);
+                ctx.fillRect(x + bw / 2 + (bw / 2) * clamp(ms / TIMING_RANGE, -1, 1) - 1, by + 1, 2, bh - 2);
+            }
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = timingCss(med);
+            ctx.fillRect(x + bw / 2 + (bw / 2) * clamp(med / TIMING_RANGE, -1, 1) - 1.5, by - 2 * s, 3, bh + 4 * s);
+            ctx.font = F.small;
+            ctx.fillStyle = TIMING_EARLY; ctx.fillText('early', x, by + bh + 11 * s);
+            ctx.fillStyle = TIMING_LATE; ctx.textAlign = 'right'; ctx.fillText('late', x + bw, by + bh + 11 * s);
+            ctx.textAlign = 'left';
+        }
+
+        // The score number, stars and accuracy line (left out in mode 'score').
+        function drawScoreStarsAccuracy(ctx, s) {
+            const m = model, ht = hudText, F = fonts;
+            const x = lay.col.x;
+            ctx.textAlign = 'left';
             if (ht.score !== m.score) { ht.score = m.score; ht.scoreStr = m.score.toLocaleString('en-US'); }
             ctx.shadowColor = 'rgba(0,0,0,0.85)';
             ctx.shadowBlur = 8;
@@ -1376,44 +1427,6 @@
             ctx.font = F.acc;
             ctx.fillStyle = '#c3cbe6';
             ctx.fillText(ht.accStr, x, lay.accY);
-
-            if (lay.timingY === null) return;
-            // Early / late meter: the last hits as ticks on a +-100 ms bar (blue early, orange late) and
-            // their median.
-            const ty = lay.timingY;
-            ctx.font = F.label;
-            ctx.fillStyle = '#7a84a6';
-            if (!timingCount) { ctx.fillText('TIMING · waiting for hits', x, ty); return; }
-            ctx.fillText('TIMING', x, ty);
-            const med = medianTiming();
-            if (med !== timingWordMedian) {
-                timingWordMedian = med;
-                timingWord = Math.abs(med) <= HIT_FX.onTimeMs ? 'ON TIME'
-                    : (med > 0 ? '+' : '') + Math.round(med) + ' ms ' + (med < 0 ? 'EARLY' : 'LATE');
-            }
-            ctx.font = F.timing;
-            ctx.fillStyle = timingCss(med);
-            ctx.fillText(timingWord, x + 56 * s, ty);
-            const bw = lay.col.w, bh = 10 * s, by = ty + 6 * s;
-            ctx.fillStyle = 'rgba(10,14,30,0.85)';
-            ctx.fillRect(x, by, bw, bh);
-            ctx.fillStyle = 'rgba(160,170,200,0.5)';
-            ctx.fillRect(x + bw / 2 - 0.5, by, 1, bh);
-            for (let k = 0; k < timingCount; k++) {
-                // oldest first: index from timingNext back
-                const idx = (timingNext - timingCount + k + TIMING_N) % TIMING_N;
-                const ms = timing[idx];
-                ctx.globalAlpha = 0.25 + 0.75 * (k + 1) / timingCount;
-                ctx.fillStyle = timingCss(ms);
-                ctx.fillRect(x + bw / 2 + (bw / 2) * clamp(ms / TIMING_RANGE, -1, 1) - 1, by + 1, 2, bh - 2);
-            }
-            ctx.globalAlpha = 1;
-            ctx.fillStyle = timingCss(med);
-            ctx.fillRect(x + bw / 2 + (bw / 2) * clamp(med / TIMING_RANGE, -1, 1) - 1.5, by - 2 * s, 3, bh + 4 * s);
-            ctx.font = F.small;
-            ctx.fillStyle = TIMING_EARLY; ctx.fillText('early', x, by + bh + 11 * s);
-            ctx.fillStyle = TIMING_LATE; ctx.textAlign = 'right'; ctx.fillText('late', x + bw, by + bh + 11 * s);
-            ctx.textAlign = 'left';
         }
 
         // Multiplier ring with its progress arc, the note streak above it, FULL COMBO under it.

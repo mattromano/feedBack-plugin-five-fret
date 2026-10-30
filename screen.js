@@ -37,9 +37,8 @@
  * for one lane, applied live through the same paths as the panel (applySetting / _saveSetting) or, for a
  * band lane, setLane / setDifficulty. Which controls show is assets/controls.js quickSettingsModel.
  *
- * Score HUD fallback: an unpinned instance on core's main view (#highway, split view off) hides its
- * score HUD while rockHeroSmith.adoptsSolo() is true (RockHeroSmith's HUD scores the play). Split
- * panels and other canvases are never adopted, so they keep theirs.
+ * Score HUD: the lane HUD always shows, also while RockHeroSmith adopts a solo play
+ * (rockHeroSmith.adoptsSolo()); only setScoreHudHidden(canvas, true | 'score') hides it or its score.
  *
  * It also opens and closes the plugin's controls screen (screen.html, #plugin-five_fret; the screen
  * itself is assets/controls.js). See "Controls screen hook" below.
@@ -48,7 +47,7 @@
     'use strict';
 
     const PLUGIN_ID = 'five_fret';
-    const ASSET_VERSION = '0.3.1';   // cache-buster for the lazily loaded files: bump with releases
+    const ASSET_VERSION = '0.3.2';   // cache-buster for the lazily loaded files: bump with releases
     const THREE_URL = '/static/vendor/three/three.module.min.js';
     const PLUGIN_ASSETS = '/api/plugins/' + PLUGIN_ID + '/assets/';
     // Load order matters: session.js needs engine.js, highway3d.js needs layout.js.
@@ -87,7 +86,10 @@
     // Band lanes, by canvas (see window.feedBackFiveFret): a pin made before an instance inits on the
     // canvas, or across a re-init, still applies. _byCanvas finds the live instance drawing on one.
     const _lanes = new WeakMap();         // canvas -> { controllerKey, part, difficulty, lefty }
-    const _scoreHidden = new WeakMap();   // canvas -> true: the HUD skips score, multiplier, streak, SP, stars
+    // canvas -> true (the HUD skips score, multiplier, streak, SP, stars, timing, pops) or 'score' (only
+    // the score number, stars and accuracy); see setScoreHudHidden.
+    const _scoreHidden = new WeakMap();
+    const HUD_MODES = Object.freeze(['score']);
     const _byCanvas = new WeakMap();      // canvas -> renderer instance
     const LANE_PARTS = Object.freeze({ guitar: true, rhythm: true, bass: true });
     const LANE_GAMEPAD_MODE = Object.freeze({ gamepadMode: null });   // a lane: by the controller's kind
@@ -182,17 +184,6 @@
         const fb = window.feedBack;
         if (!fb || fb.uiVersion !== 'v3' || !fb.ui || typeof fb.ui.playerControlSlot !== 'function') return null;
         try { return fb.ui.playerControlSlot() || null; } catch (_) { return null; }
-    }
-
-    // RockHeroSmith scores solo plays itself (its HUD, results): then the 5-fret score HUD stays hidden.
-    function _rhsAdoptsSolo() {
-        const rhs = window.rockHeroSmith;
-        try { return !!(rhs && typeof rhs.adoptsSolo === 'function' && rhs.adoptsSolo() === true); } catch (_) { return false; }
-    }
-    // RockHeroSmith adopts only core's main view (#highway) with split view off, never a split panel
-    // (as the drums plugin's _adoptedLane).
-    function _rhsAdoptsLane(canvas) {
-        return !!(canvas && typeof canvas === 'object' && canvas.id === 'highway' && !_ssActive() && _rhsAdoptsSolo());
     }
 
     // Settings values a control may set (anything else is ignored).
@@ -812,7 +803,7 @@
                 frame.whammy = session ? session.whammy() : 0;
                 frame.state = session ? session.state() : null;
                 frame.lefty = !!cur().lefty;
-                frame.scoreHidden = _scoreHidden.get(canvas) === true || (!pin && _rhsAdoptsLane(canvas));
+                frame.scoreHidden = _scoreHidden.get(canvas) || false;
                 frame.header = part ? headerFor(part) : '';
                 frame.sourceKind = part ? part.sourceKind : '';
                 statusArgs.hasParts = !!part;
@@ -1092,14 +1083,19 @@
             }
             return _savedDifficulty();
         },
-        // Hide (true) or show (false) that lane's score, multiplier, streak, SP bar and stars.
+        // Hide (true) or show (false) that lane's score, multiplier, streak, SP bar and stars, or hide
+        // only its score number, stars and accuracy ('score', a hudModes() entry). false (changing
+        // nothing) unless canvas is an object and hidden a boolean or a known mode.
         setScoreHudHidden(canvas, hidden) {
-            if (!_canvasArg(canvas) || typeof hidden !== 'boolean') return false;
-            if (hidden) _scoreHidden.set(canvas, true);
+            if (!_canvasArg(canvas) || (typeof hidden !== 'boolean' && !HUD_MODES.includes(hidden))) return false;
+            if (hidden) _scoreHidden.set(canvas, hidden);
             else _scoreHidden.delete(canvas);
             return true;
         },
-        isScoreHudHidden(canvas) { return _canvasArg(canvas) && _scoreHidden.get(canvas) === true; },
+        // The lane's mode: true, false or 'score'.
+        isScoreHudHidden(canvas) { return (_canvasArg(canvas) && _scoreHidden.get(canvas)) || false; },
+        // The partial modes setScoreHudHidden takes besides true / false.
+        hudModes() { return HUD_MODES.slice(); },
         // Engine getState() plus { starThresholds (full chart), partId, instrument, sourceKind,
         // difficulty, controllerKey, connected }, or null (no instance on the canvas, or no part playing).
         getInstanceState(canvas) {

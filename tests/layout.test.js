@@ -172,6 +172,13 @@ test('hudLayout: narrow lanes get a compact, scaled HUD in the bottom corners', 
     assert.ok(s.streakY - 30 * s.scale >= 0);
 });
 
+test("hudLayout: without the score (mode 'score') the timing meter moves up under the star power meter", () => {
+    const lay = H.hudLayout(1280, 720, { trackLeft: 450, trackRight: 830, strikeY: 620 });
+    assert.ok(lay.timingNoScoreY > lay.meterY + lay.meterH, 'below the meter');
+    assert.ok(lay.timingNoScoreY < lay.scoreY, 'where the score was');
+    assert.equal(H.hudLayout(360, 640, { trackLeft: 10, trackRight: 350, strikeY: 560 }).timingNoScoreY, null, 'compact: no timing meter');
+});
+
 test('hudLayout drops the header tag in a band lane and keeps AUTO CHART at the bottom-left', () => {
     const lay = H.hudLayout(1000, 600, { scoreHidden: true });
     assert.equal(lay.showHeader, false);
