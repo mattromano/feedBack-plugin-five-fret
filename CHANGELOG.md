@@ -3,6 +3,20 @@
 All notable changes to the 5-Fret plugin. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow `plugin.json`.
 
+## [0.4.0] - Unreleased
+
+### Added
+- **Calibrate support** (the main menu's Calibrate, core's Sync Lab):
+  - `window.__fiveFretCalibrationWindow` (seconds): while set, lanes judge with a fixed hit window that
+    wide, so far-off strums are measured instead of missed. Lanes pick it up on their next draw.
+  - `five_fret:hit` / `five_fret:miss` carry `inputOffsetMs`, the controller offset in use (raw timing =
+    `offsetMs + inputOffsetMs`).
+  - `feedBackFiveFret.getControllerOffsets()`, `setControllerOffset(key, ms)` (clamped to ±200 ms in steps
+    of 5, saved, applied to every lane, `five_fret:offset-changed` emitted) and `refreshParams()`.
+  - `createSession({ params })` passes engine parameter overrides through.
+  - The controls screen's offset row has a **Full calibration** button that opens Calibrate.
+- Asset version bumped.
+
 ## [0.3.2] - Unreleased
 
 ### Added
