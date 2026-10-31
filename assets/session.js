@@ -4,7 +4,7 @@
  *
  * Modelled on feedBack-plugin-drums/assets/session.js createSession. Wraps one engine.js engine for
  * one part at one difficulty:
- *   createSession({ chart, instrument, difficulty, gamepadMode, offsetMs, pressed?, now? }) ->
+ *   createSession({ chart, instrument, difficulty, gamepadMode, offsetMs, params?, pressed?, now? }) ->
  *     { input(action, value, tSong), update(tSong), releaseAll(tSong), pressedFrets(), whammy(), state(), noteState(i),
  *       drainEvents(), notes, difficulty, offsetMs, resets, starPower, starThresholds }
  *   drainEvents(): engine events as { type: event name, ...payload } (a payload's note type is noteType;
@@ -17,6 +17,7 @@
  *   the engine clock alike, so an offset input is never clamped forward to a clock that ran ahead.
  *   pressed: bool[5] frets already held (a rebuild mid-song), applied to the engine on the first update.
  *   now(): wall clock in seconds (default performance.now() / 1000), for jump detection.
+ *   params: engine parameter overrides, passed to engine.create (e.g. a wider hitWindow while calibrating).
  *
  * Seeking / looping (Review Focus 4): update() compares the song advance since the last update with
  * the wall time since then. More than 0.25 s behind it, or more than 0.25 s beyond it, is a jump and
@@ -235,7 +236,8 @@
             beats: Array.isArray(chart.beats) ? chart.beats : [],
             starPower,
             solos: Array.isArray(chart.solos) ? chart.solos : [],
-        }, { instrument: opts.instrument === 'bass' ? 'bass' : 'guitar', gamepadMode: !!opts.gamepadMode });
+        }, { instrument: opts.instrument === 'bass' ? 'bass' : 'guitar', gamepadMode: !!opts.gamepadMode,
+            params: opts.params && typeof opts.params === 'object' ? opts.params : undefined });
         // The full chart's star thresholds (engine.reset on a seek leaves them as they are).
         const starThresholds = Object.freeze(Array.isArray(engine.starThresholds) ? engine.starThresholds.slice() : []);
 

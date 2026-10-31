@@ -47,7 +47,7 @@
     'use strict';
 
     const PLUGIN_ID = 'five_fret';
-    const ASSET_VERSION = '0.3.2';   // cache-buster for the lazily loaded files: bump with releases
+    const ASSET_VERSION = '0.4.0';   // cache-buster for the lazily loaded files: bump with releases
     const THREE_URL = '/static/vendor/three/three.module.min.js';
     const PLUGIN_ASSETS = '/api/plugins/' + PLUGIN_ID + '/assets/';
     // Load order matters: session.js needs engine.js, highway3d.js needs layout.js.
@@ -65,6 +65,7 @@
     const EV_BINDINGS = 'five_fret:bindings-changed';   // { controllerKey }: a binding was saved
     const EV_SETTINGS = 'five_fret:settings-changed';   // settings.html saved a setting (showAutoCharts)
     const EV_OFFSET = 'five_fret:offset-changed';       // { controllerKey, offsetMs }: an input offset was saved
+    const OFFSET_LIMIT_MS = 200, OFFSET_STEP_MS = 5;      // as the controls screen's offset field (controls.js)
     // A quick settings change ({ canvas, controllerKey, key, value, lane }): lane true when it changed a
     // band lane's pin (which is never saved here), so whoever pinned it can keep its own prefs in step.
     const EV_QUICK = 'five_fret:quick-setting';
@@ -129,6 +130,9 @@
         try { document.querySelectorAll(`script[src="${url}"]`).forEach((el) => el.remove()); } catch (_) { /* no DOM */ }
     }
     const _assetUrl = (name) => PLUGIN_ASSETS + name + '?v=' + ASSET_VERSION;
+    // Calibrate (core's Sync Lab) sets window.__fiveFretCalibrationWindow (seconds, full width) while
+    // its test song plays: far-off strums are then judged (and measured) instead of missed. 0 = normal.
+    const _calWindow = () => { const v = +window.__fiveFretCalibrationWindow; return v > 0 && v < 5 ? v : 0; };
 
     // One shared promise, so N instances never race on the same tags.
     let _modulesPromise = null;
@@ -349,7 +353,7 @@
         const statusArgs = { hasParts: false, hasController: false, connected: false };
         // What the session was built from: rebuilt when any of these change (compared field by field,
         // so the steady state allocates nothing).
-        const built = { partId: null, part: null, difficulty: null, gamepadMode: null, offsetMs: null,
+        const built = { partId: null, part: null, difficulty: null, gamepadMode: null, offsetMs: null, calWindow: 0,
             notes: null, notesLen: -1, levelNotes: null, levelLen: -1, beats: null, beatsLen: -1,
             sections: null, sectionsLen: -1 };
         let header = '', headerPart = null, headerSession = null, headerInput = null;
@@ -595,14 +599,15 @@
             const levelNotes = lv && Array.isArray(lv.notes) ? lv.notes : null;
             const gm = gamepadMode();
             const off = offsetMs();
+            const cw = _calWindow();
             const b = built;
             if (session && b.partId === partId && b.part === part && b.difficulty === difficulty
-                && b.gamepadMode === gm && b.offsetMs === off
+                && b.gamepadMode === gm && b.offsetMs === off && b.calWindow === cw
                 && b.notes === part.notes && b.notesLen === (part.notes ? part.notes.length : -1)
                 && b.levelNotes === levelNotes && b.levelLen === (levelNotes ? levelNotes.length : -1)
                 && b.beats === beats && b.beatsLen === beats.length
                 && b.sections === sections && b.sectionsLen === sections.length) return;
-            b.partId = partId; b.part = part; b.difficulty = difficulty; b.gamepadMode = gm; b.offsetMs = off;
+            b.partId = partId; b.part = part; b.difficulty = difficulty; b.gamepadMode = gm; b.offsetMs = off; b.calWindow = cw;
             b.notes = part.notes; b.notesLen = part.notes ? part.notes.length : -1;
             b.levelNotes = levelNotes; b.levelLen = levelNotes ? levelNotes.length : -1;
             b.beats = beats; b.beatsLen = beats.length;
@@ -617,6 +622,7 @@
                 difficulty,
                 gamepadMode: gm,
                 offsetMs: off,
+                params: cw ? { hitWindow: { maxWindow: cw, minWindow: cw, isDynamic: false } } : undefined,
                 pressed,
             });
         }
@@ -644,6 +650,7 @@
                 ev.multiplier = state.multiplier;
                 ev.spActive = state.starPower.active;
                 ev.resets = resets;
+                ev.inputOffsetMs = session.offsetMs;   // the offset in use: raw timing = offsetMs + inputOffsetMs
                 try { bus.emit(name, ev); } catch (_) { /* listeners only */ }
             }
         }
@@ -1130,6 +1137,26 @@
         },
         // Plan 5's "show auto charts" flag (five_fret.settings.v1), default false.
         showAutoCharts: () => _showAutoCharts(),
+        // Promise of every stored input offset, { controllerKey: ms }.
+        getControllerOffsets() {
+            return _loadProfiles().then((P) => Object.assign({}, P.loadSettings().offsetMs));
+        },
+        // Save a controller's input offset (ms, + = the controller registers late; clamped to the
+        // controls screen's range and step) and apply it to every lane. Promise of the saved value, or
+        // null on a bad key or value.
+        setControllerOffset(controllerKey, ms) {
+            if (typeof controllerKey !== 'string' || !controllerKey || !Number.isFinite(+ms)) return Promise.resolve(null);
+            const v = Math.max(-OFFSET_LIMIT_MS, Math.min(OFFSET_LIMIT_MS, Math.round(+ms / OFFSET_STEP_MS) * OFFSET_STEP_MS));
+            return _loadProfiles().then((P) => {
+                P.setOffset(controllerKey, v);
+                _emit(EV_OFFSET, { controllerKey, offsetMs: v });
+                _quickSyncAll();
+                return v;
+            });
+        },
+        // Nothing to do: lanes pick up window.__fiveFretCalibrationWindow on their next draw. Kept so
+        // Calibrate can call it either way.
+        refreshParams() { return true; },
         // Play a library song on one 5-fret part ('guitar' | 'rhythm' | 'bass'), optionally at a difficulty
         // ('easy' | 'medium' | 'hard' | 'expert'), in the main player: they become the saved Part and
         // Difficulty settings (as picking them in the panel does) and the 5-Fret view is

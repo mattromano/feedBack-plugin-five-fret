@@ -461,8 +461,14 @@
                 else startCalibration(card);
             });
             offsetRow.append(el('span', 'text-fb-textDim text-sm', 'Input offset (ms)'), card.offset, card.calibrate);
+            // The main menu's Calibrate (core's Sync Lab) measures through the real game, picture and
+            // sound included: the most accurate offset.
+            if (typeof window.showScreen === 'function') {
+                offsetRow.append(button('Full calibration', 'calibrate-full', () => window.showScreen('plugin-sync_lab')));
+            }
             const note = el('div', 'text-fb-textDim text-xs mt-1',
-                'Calibrate plays clicks: strum along to them and the input offset is set from how late or early you are.');
+                'Calibrate plays clicks: strum along to them and the input offset is set from how late or early you are. ' +
+                'Most accurate: Full calibration (main menu → Calibrate), which also lines up picture and sound.');
             note.dataset.ff = 'calibrate-note';
             card.calibStatus = el('div', 'text-fb-textDim text-xs mt-1');
             card.calibStatus.dataset.ff = 'calib-status';

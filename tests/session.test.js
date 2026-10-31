@@ -96,6 +96,25 @@ test('input offset shifts judgment time', () => {
     assert.equal(shifted.offsetMs, 100);
 });
 
+test('params pass through to the engine: a calibration-wide hit window judges a far-off strum', () => {
+    // Note at 1.0 s, strum at 1.2 s: a miss in the normal ±70 ms window, a hit in a ±250 ms one.
+    const chart = chartOf(singles([1, 3]));
+    function strumLate(params) {
+        const { s, clock } = session(chart, { params });
+        play(s, clock, 0, 1.18);
+        s.input('green', 1, 1.19);
+        s.input('strum_down', 1, 1.2);
+        s.input('strum_down', 0, 1.2);
+        play(s, clock, 1.2, 1.6);
+        return s;
+    }
+    assert.equal(strumLate(undefined).noteState(0), 'miss');
+    const wide = strumLate({ hitWindow: { maxWindow: 0.5, minWindow: 0.5, isDynamic: false } });
+    assert.equal(wide.noteState(0), 'hit');
+    const hit = wide.drainEvents().find((e) => e.type === 'hit');
+    assert.ok(hit.offsetMs >= 190 && hit.offsetMs <= 210, 'measured ~200 ms late: ' + hit.offsetMs);
+});
+
 test('seek backwards resets without misses', () => {
     const chart = chartOf(singles([1, 2, 3, 4, 5, 6, 7, 8]));
     const { s, clock } = session(chart);

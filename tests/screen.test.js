@@ -1255,6 +1255,53 @@ test('a hit emits five_fret:hit with canvas, controllerKey, points, score, combo
     assert.equal(h2[0].detail.controllerKey, 'Xbox#1');
 });
 
+test('hit events carry the input offset in use (inputOffsetMs)', async (t) => {
+    const env = setup(t);
+    env.storage.setItem(P.SETTINGS_KEY, JSON.stringify({ offsetMs: { 'Xbox#1': 25 } }));
+    const seen = recordBandEvents(env);
+    const { r } = await pinnedLane(env);
+    const ff = parts();
+    drawTo(r, ff, 0.8, 1.02);
+    env.gi.button(6, true);
+    r.draw(bundleAt(1.02 + FRAME, ff));
+    const hits = named(seen, 'five_fret:hit');
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].detail.inputOffsetMs, 25);
+});
+
+test('window.__fiveFretCalibrationWindow rebuilds the lane with a wide hit window (Calibrate)', async (t) => {
+    async function lateHit(win) {
+        const env = setup(t);
+        if (win) env.win.__fiveFretCalibrationWindow = win;
+        const seen = recordBandEvents(env);
+        const { r } = await pinnedLane(env);
+        const ff = parts();
+        drawTo(r, ff, 0.8, 1.2);    // the note at 1.0 is 200 ms behind
+        env.gi.button(6, true);
+        r.draw(bundleAt(1.2 + FRAME, ff));
+        return named(seen, 'five_fret:hit');
+    }
+    assert.equal((await lateHit(0)).length, 0, 'normal window: missed');
+    const hits = await lateHit(0.5);
+    assert.equal(hits.length, 1, 'calibration window: measured');
+    assert.ok(hits[0].detail.offsetMs > 150, 'late: ' + hits[0].detail.offsetMs);
+});
+
+test('setControllerOffset clamps to the controls range, saves, emits and getControllerOffsets reads it', async (t) => {
+    const env = setup(t);
+    const api = env.win.feedBackFiveFret;
+    const emitted = [];
+    env.bus.on('five_fret:offset-changed', (e) => emitted.push(e.detail));
+    assert.equal(await api.setControllerOffset('Xbox#1', 47), 45);
+    assert.equal(await api.setControllerOffset('Guitar#1', -900), -200);
+    assert.equal(await api.setControllerOffset('', 10), null);
+    assert.equal(await api.setControllerOffset('Xbox#1', 'x'), null);
+    assert.deepEqual(await api.getControllerOffsets(), { 'Xbox#1': 45, 'Guitar#1': -200 });
+    assert.deepEqual(JSON.parse(env.storage.getItem(P.SETTINGS_KEY)).offsetMs, { 'Xbox#1': 45, 'Guitar#1': -200 });
+    assert.deepEqual(emitted, [{ controllerKey: 'Xbox#1', offsetMs: 45 }, { controllerKey: 'Guitar#1', offsetMs: -200 }]);
+    assert.equal(api.refreshParams(), true);
+});
+
 test('the view gets every draw\'s engine events (frame.events) and a wall clock, before the bus does', async (t) => {
     const env = setup(t);
     const seen = recordBandEvents(env);
